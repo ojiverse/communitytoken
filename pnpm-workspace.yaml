@@ -1,0 +1,9 @@
+packages: []
+
+ignoredBuiltDependencies:
+  - esbuild
+  - supabase
+
+onlyBuiltDependencies:
+  - simple-git-hooks
+  - supabase

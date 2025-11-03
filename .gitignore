@@ -156,3 +156,6 @@ dist
 # Supabase
 .branches
 .temp
+
+# Claude Code
+CLAUDE.*.md

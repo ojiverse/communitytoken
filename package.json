@@ -16,7 +16,9 @@
 		"supabase:stop": "supabase stop --workdir apps/api --no-backup",
 		"supabase:status": "supabase status --workdir apps/api",
 		"supabase:serve": "supabase functions serve --workdir apps/api --no-verify-jwt",
-		"supabase:db:reset": "supabase db reset --workdir apps/api"
+		"supabase:db:reset": "supabase db reset --workdir apps/api",
+		"supabase:types:gen": "supabase gen types typescript --workdir apps/api --local > apps/api/src/lib/database.types.ts",
+		"supabase:types:verify": "supabase gen types typescript --workdir apps/api --project-id \"$SUPABASE_PROJECT_REF\" > apps/api/src/lib/database.types.prod.ts && diff apps/api/src/lib/database.types.ts apps/api/src/lib/database.types.prod.ts"
 	},
 	"lint-staged": {
 		"*": "secretlint",

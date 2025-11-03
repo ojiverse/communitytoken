@@ -50,6 +50,7 @@ All technology choices are documented in [docs/tech.md](./docs/tech.md) with rat
 
 ### Prerequisites
 
+- VSCode installed
 - Supabase CLI installed
 - Deno runtime (comes with Supabase CLI)
 - pnpm installed
@@ -62,17 +63,27 @@ All technology choices are documented in [docs/tech.md](./docs/tech.md) with rat
    cd communitytoken
    ```
 
-2. **Start Supabase local stack** (optional, for database access):
+2. **Open workspace in VSCode**:
+   ```bash
+   code communitytoken.code-workspace
+   ```
+
+   **Important**: Always open `communitytoken.code-workspace` instead of the root folder. This ensures:
+   - Deno language server is properly configured for `apps/api` and `supabase/functions`
+   - TypeScript experimental features (tsgo) are enabled
+   - Correct workspace-specific settings are applied
+
+3. **Start Supabase local stack** (optional, for database access):
    ```bash
    pnpm supabase:start
    ```
 
-3. **Start API server**:
+4. **Start API server**:
    ```bash
    pnpm supabase:serve
    ```
 
-4. **Test the API**:
+5. **Test the API**:
    ```bash
    curl http://localhost:54321/functions/v1/api/health
    ```

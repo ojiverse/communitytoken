@@ -1,0 +1,35 @@
+{
+  "folders": [
+    {
+      "path": ".",
+      "name": "root"
+    },
+    {
+      "path": "apps/api",
+      "name": "api"
+    }
+  ],
+  "settings": {
+    "typescript.experimental.useTsgo": true,
+    "deno.enablePaths": [
+      "apps/api",
+      "supabase/functions"
+    ],
+    "deno.lint": true,
+    "deno.unstable": [
+      "bare-node-builtins",
+      "byonm",
+      "sloppy-imports",
+      "unsafe-proto",
+      "webgpu",
+      "broadcast-channel",
+      "worker-options",
+      "cron",
+      "kv",
+      "ffi",
+      "fs",
+      "http",
+      "net"
+    ],
+  }
+}

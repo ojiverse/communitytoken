@@ -11,27 +11,61 @@
  * - Error handling for database operations
  */
 
-import type { SupabaseClient } from '@supabase/supabase-js'
-import type { ITestItemRepository } from './ITestItemRepository.ts'
-import { AsTestItemID, TestItemEntity, type TestItemID } from '../../entities/dev/TestItemEntity.ts'
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type { ITestItemRepository } from "./ITestItemRepository.ts";
+import {
+  AsTestItemID,
+  TestItemEntity,
+  type TestItemID,
+} from "../../entities/dev/TestItemEntity.ts";
 
 /**
  * Database row type matching dev_test_items table schema
  */
 type DevTestItemRow = {
-  id: string
-  name: string
-  value: number
-  created_at: number
-}
+  id: string;
+  name: string;
+  value: number;
+  created_at: number;
+};
 
 /**
  * Supabase implementation of TestItem repository
  */
 export class TestItemRepository implements ITestItemRepository {
-  private readonly tableName = 'dev_test_items'
+  private readonly tableName = "dev_test_items";
 
   constructor(private readonly client: SupabaseClient) {}
+
+  /**
+   * Maps database row to domain entity
+   *
+   * @param row - Database row from Supabase
+   * @returns TestItemEntity instance
+   */
+  private fromDatabase(row: DevTestItemRow): TestItemEntity {
+    return new TestItemEntity(
+      AsTestItemID(row.id),
+      row.name,
+      row.value,
+      row.created_at,
+    );
+  }
+
+  /**
+   * Maps domain entity to database row
+   *
+   * @param entity - TestItemEntity instance
+   * @returns Database row object
+   */
+  private toDatabase(entity: TestItemEntity): DevTestItemRow {
+    return {
+      id: entity.id,
+      name: entity.name,
+      value: entity.value,
+      created_at: entity.createdAt,
+    };
+  }
 
   /**
    * Retrieves all test items from the database
@@ -42,21 +76,14 @@ export class TestItemRepository implements ITestItemRepository {
   async findAll(): Promise<TestItemEntity[]> {
     const { data, error } = await this.client
       .from(this.tableName)
-      .select('*')
-      .order('created_at', { ascending: false })
+      .select("*")
+      .order("created_at", { ascending: false });
 
     if (error) {
-      throw new Error(`Failed to fetch test items: ${error.message}`)
+      throw new Error(`Failed to fetch test items: ${error.message}`);
     }
 
-    return (data as DevTestItemRow[]).map((row) =>
-      TestItemEntity.fromDatabase({
-        id: row.id,
-        name: row.name,
-        value: row.value,
-        created_at: row.created_at,
-      })
-    )
+    return (data as DevTestItemRow[]).map((row) => this.fromDatabase(row));
   }
 
   /**
@@ -69,25 +96,19 @@ export class TestItemRepository implements ITestItemRepository {
   async findById(id: TestItemID): Promise<TestItemEntity | null> {
     const { data, error } = await this.client
       .from(this.tableName)
-      .select('*')
-      .eq('id', id)
-      .single()
+      .select("*")
+      .eq("id", id)
+      .single();
 
     if (error) {
       // PGRST116: Row not found - return null instead of throwing
-      if (error.code === 'PGRST116') {
-        return null
+      if (error.code === "PGRST116") {
+        return null;
       }
-      throw new Error(`Failed to fetch test item by ID: ${error.message}`)
+      throw new Error(`Failed to fetch test item by ID: ${error.message}`);
     }
 
-    const row = data as DevTestItemRow
-    return TestItemEntity.fromDatabase({
-      id: row.id,
-      name: row.name,
-      value: row.value,
-      created_at: row.created_at,
-    })
+    return this.fromDatabase(data as DevTestItemRow);
   }
 
   /**
@@ -98,25 +119,19 @@ export class TestItemRepository implements ITestItemRepository {
    * @throws Error if database insert fails
    */
   async create(item: TestItemEntity): Promise<TestItemEntity> {
-    const dbRow = item.toDatabase()
+    const dbRow = this.toDatabase(item);
 
     const { data, error } = await this.client
       .from(this.tableName)
       .insert(dbRow)
       .select()
-      .single()
+      .single();
 
     if (error) {
-      throw new Error(`Failed to create test item: ${error.message}`)
+      throw new Error(`Failed to create test item: ${error.message}`);
     }
 
-    const row = data as DevTestItemRow
-    return TestItemEntity.fromDatabase({
-      id: row.id,
-      name: row.name,
-      value: row.value,
-      created_at: row.created_at,
-    })
+    return this.fromDatabase(data as DevTestItemRow);
   }
 
   /**
@@ -129,13 +144,13 @@ export class TestItemRepository implements ITestItemRepository {
   async delete(id: TestItemID): Promise<boolean> {
     const { error, count } = await this.client
       .from(this.tableName)
-      .delete({ count: 'exact' })
-      .eq('id', id)
+      .delete({ count: "exact" })
+      .eq("id", id);
 
     if (error) {
-      throw new Error(`Failed to delete test item: ${error.message}`)
+      throw new Error(`Failed to delete test item: ${error.message}`);
     }
 
-    return (count ?? 0) > 0
+    return (count ?? 0) > 0;
   }
 }

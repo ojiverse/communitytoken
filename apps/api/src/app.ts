@@ -1,6 +1,9 @@
 import { Hono } from 'hono'
 import { users } from './routes/users.ts'
 import type { Env } from './lib/types.ts'
+import { createTestItemsRouter } from './routes/dev/test-items.ts'
+import { TestItemRepository } from './repositories/dev/TestItemRepository.ts'
+import { getSupabaseClient } from './lib/db.ts'
 
 export function createApp() {
   const app = new Hono<Env>()
@@ -18,6 +21,11 @@ export function createApp() {
 
   // API v1 routes
   app.route('/v1/users', users)
+
+  // Dev routes (temporary - for database verification)
+  const supabase = getSupabaseClient()
+  const testItemRepo = new TestItemRepository(supabase)
+  app.route('/dev/test-items', createTestItemsRouter(testItemRepo))
 
   // Debug: catch-all for unmatched routes
   app.all('*', (c) => {

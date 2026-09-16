@@ -1,18 +1,19 @@
 {
-	"name": "@communitytoken/poc-community-state",
+	"name": "@communitytoken/economic-kernel",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
+	"exports": {
+		".": "./src/index.ts"
+	},
 	"scripts": {
 		"test": "vitest run",
 		"check": "tsc --noEmit"
 	},
 	"devDependencies": {
-		"@cloudflare/vitest-pool-workers": "0.22.0",
 		"@communitytoken/economic-contract": "workspace:*",
 		"@tsconfig/strictest": "2.0.8",
 		"typescript": "7.0.2",
-		"vitest": "4.1.11",
-		"wrangler": "4.130.0"
+		"vitest": "4.1.11"
 	}
 }

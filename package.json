@@ -3,9 +3,6 @@
 	"version": "1.0.0",
 	"description": "Community Token System Monorepo",
 	"private": true,
-	"workspaces": [
-		"apps/*"
-	],
 	"packageManager": "pnpm@10.14.0",
 	"engines": {
 		"node": ">=22.0.0",

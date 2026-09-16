@@ -138,6 +138,10 @@ Rules applying to every kind:
 - `TOKEN_ISSUANCE` credits the treasury without debiting any wallet — the ledger row records
   source and destination as the treasury, and the credit-only semantics come from the kind, not
   from the row. Every other kind requires `from.balance >= amount` and is rejected otherwise.
+- A non-issuance transfer whose source and destination are the same wallet (a self-transfer) is
+  valid and net-zero: it records an operation and ledger entry while moving no balance (§4 delta
+  semantics). Among non-issuance kinds, only `P2P_TRANSFER` can satisfy `from = to` under the
+  direction rules; `TOKEN_ISSUANCE` is separately defined as the treasury-to-treasury credit.
 - For each accepted operation, the balance updates, the EconomicOperation record, and the ledger
   entry commit atomically. A failure at any point leaves all state untouched.
 - Wallet-kind direction is enforced per the table: a kind used with any other direction is
@@ -185,6 +189,114 @@ kernel-level tests.
 - **Persistence across eviction** — committed state survives Durable Object eviction and restart
   because it lives in storage, not instance memory.
 
+### Formal state-transition model
+
+The economic invariants above are fixed by a state-transition model. Let `M = 2^53 - 1`.
+
+**State.** A community state is the tuple `S = (U, W, O, L)`:
+
+- `U` — users; `W` — wallets; `O` — operations (ordered history); `L` — ledger entries (ordered
+  history).
+- `owns : U -> W` maps each user to its wallet; `kind : W -> {user, system}` and
+  `balance : W -> Z` give each wallet its attributes; `op : L -> O` maps each ledger entry to
+  the operation that caused it.
+
+Structural invariants:
+
+- Unique treasury: `exists! T in W : kind(T) = system`. `T` is the only system wallet.
+- One wallet per user: `forall u in U: exists! w in W : owns(u) = w and kind(w) = user`, and
+  `owns` is injective — no two users share a wallet.
+- Operation/ledger correspondence (Phase 1): `op` is a bijection —
+  `forall l in L: exists! o in O : op(l) = o` and `forall o in O: exists! l in L : op(l) = o`.
+  Every movement is explained by exactly one operation and every operation records exactly one
+  ledger entry.
+- Initial state `S0 = (empty, {T}, [], [])` with `balance(T) = 0`.
+
+**Monetary domains and supply.**
+
+```text
+TokenAmount   = { a in Z | 1 <= a <= M }
+WalletBalance = { b in Z | 0 <= b <= M }
+TotalSupply   = { s in Z | 0 <= s <= M }
+
+supply(S) = sum over w in W of balance(w)
+issued(S) = sum over l in L where operation(l).kind = TOKEN_ISSUANCE of l.amount
+```
+
+The accounting invariant is `I_supply(S): issued(S) = supply(S) and supply(S) <= M`.
+
+**Lifecycle transitions.** Beyond economic commands, structural transitions change `U` and `W`
+without moving tokens. Phase 1 has exactly one, an account-lifecycle concern owned by the
+application layer rather than the economic evaluator:
+
+```text
+RegisterUser(u, w)
+
+Pre:   u notin U;  w notin W
+Post:  U' = U ∪ {u};  W' = W ∪ {w};  owns'(u) = w;  kind'(w) = user;  balance'(w) = 0
+       owns/kind/balance unchanged elsewhere;  O' = O;  L' = L
+```
+
+With it, the trace `S0 -> RegisterUser(Alice) -> RegisterUser(Bob) -> TOKEN_ISSUANCE ->
+DISTRIBUTION -> P2P_TRANSFER` is valid in the model.
+
+**Commands and transitions.** A command is `C = (kind, from, to, amount, metadata)`. Operation
+evaluation is a partial transition relation `S --C--> S'`: when the preconditions hold the
+transition produces `S'`; otherwise evaluation rejects and no transition occurs (rejection is the
+identity `S' = S` — it commits nothing).
+
+Common preconditions:
+
+```text
+amount in TokenAmount
+from in W and to in W
+wallet-kind direction is valid per the §3 table
+```
+
+plus, for every non-issuance kind, `balance(from) >= amount`; and every resulting balance and the
+resulting supply must stay inside their domains.
+
+**Balance delta semantics.** A transition's balance change is defined per wallet as the integer
+delta `Delta_C(w)`, not as an ordered list of assignments:
+
+- `TOKEN_ISSUANCE`: `Delta_C(T) = +amount`, and `Delta_C(w) = 0` for `w != T`.
+- Non-issuance: `Delta_C(w) = -amount * [w = from] + amount * [w = to]`, where `[P]` is 1 when
+  proposition `P` holds and 0 otherwise.
+
+The resulting balance is `balance'(w) = balance(w) + Delta_C(w)`. For a self-transfer
+(`from = to`) the indicator form gives `Delta_C(from) = -amount + amount = 0` — order-free and
+supply-preserving by construction.
+
+**History transition.** An accepted transition creates fresh records `o_new notin O` and
+`l_new notin L` bound by `op(l_new) = o_new`, with `o_new.kind = C.kind`, `l_new.from = C.from`,
+`l_new.to = C.to`, `l_new.amount = C.amount`; then `O' = O ++ [o_new]` and `L' = L ++ [l_new]`,
+so `O` is a prefix of `O'` and `L` a prefix of `L'`. A rejected command produces `S' = S` with
+nothing appended — the formal content of "rejection leaves no trace".
+
+### Invariant preservation
+
+Each accepted transition preserves the invariants: `I(S)` and `Pre(S, C)` imply `I(S')`.
+
+- **Supply conservation (non-issuance)** — `sum over w of Delta_C(w) = -amount + amount = 0`, so
+  `supply(S') = supply(S)`. The indicator form covers self-transfers identically. And since
+  `o_new.kind != TOKEN_ISSUANCE`, `issued(S') = issued(S)`; together `issued(S') = supply(S')`.
+- **Issuance-only supply growth** — issuance has `sum Delta_C = +amount`, so
+  `supply(S') = supply(S) + amount`. The appended records satisfy `o_new.kind = TOKEN_ISSUANCE`
+  and `l_new.amount = C.amount`, hence by the definition of `issued`,
+  `issued(S') = issued(S) + amount`. Combined, `issued(S') = supply(S')`, and by induction over
+  the history `issued(S) = supply(S)` holds in every reachable state, given
+  `issued(S0) = supply(S0) = 0`.
+- **Balance range** — preconditions require `balance(w) + Delta_C(w) in WalletBalance` for every
+  `w`, so `balance'(w)` remains in range.
+- **Structure** — economic transitions touch only balances and histories. The lifecycle
+  transition `RegisterUser(u, w)` is the only other way `U`/`W`/`owns` change: it moves no tokens
+  (`O' = O`, `L' = L`, so supply and issued are preserved), requires `u notin U` and a fresh
+  user-kind `w`, and so preserves unique treasury, one-wallet-per-user, and injectivity of
+  `owns`.
+- **Append-only** — histories grow by concatenation only; no transition updates or deletes an
+  existing entry.
+- **Rejection** — `S' = S`, so every invariant is preserved trivially.
+
 ## 5. Preserve versus replace
 
 The rebuild preserves the economic semantics of the Supabase/PostgreSQL implementation while
@@ -216,11 +328,14 @@ Durable Object           serialization authority; ordering only
 SQLite storage           persistence + structural constraints
 ```
 
-- **Domain kernel** — owns the rules of §3 and the economic invariants of §4. Depends on no
-  Cloudflare runtime types. Time and identifier generation are injected ports, so `Date.now` and
-  `crypto.randomUUID` never appear inside domain code.
-- **Durable Object** — one named instance per deployment serializes all mutation. It applies the
-  kernel's decision inside a storage transaction; it holds no economic policy.
+- **Domain kernel** — owns the rules of §3 and the transition preconditions of §4 as a pure
+  function from current economic facts plus a command to a rejection or an `EconomicEffect`. It
+  owns no state, history, users, storage, clock, or identifier allocation; durable record identity
+  and commit timestamps are allocated at the persistence boundary that applies the effect. Depends
+  on no Cloudflare runtime types.
+- **Durable Object** — one named instance per deployment serializes all mutation. Inside one
+  storage transaction it reads the current facts, applies the kernel's decision, and persists the
+  effect; it holds no economic policy.
 - **SQLite storage** — persists state and enforces structural floors: non-negative balances,
   positive amounts, foreign keys, ledger immutability. It never contains policy such as reward
   amounts, prices, or issuance strategy.
@@ -245,6 +360,10 @@ absent on purpose; the record explains what would own the concern if it returns.
   example, a reward kind when Daily Reward is implemented). No speculative kinds.
 - **Reversal or correction kinds** — corrections are ordinary new operations; the incorrect entry
   remains as history. No special reversal semantics in Phase 1.
+- **Ruleset versioning** — issue #3's conceptual schema lists `ruleset_version` on the operation
+  record. No versioned ruleset exists yet: §3 is the only ruleset, so the field would store a
+  constant. When operation semantics evolve, the operation record is where the version belongs;
+  the field arrives with the first versioning requirement, not before.
 - **External identity binding** — OIDC `iss`/`sub` binding is Phase 2. A user is currently only an
   internal anchor for wallet ownership.
 
@@ -263,11 +382,16 @@ persistence consistency guarantees of §4:
 - storage-enforced append-only ledger;
 - persistence across Durable Object eviction.
 
+The storage-independent half of §4 is verified by `packages/economic-contract`
+(`@communitytoken/economic-contract`): a single contract suite derived from the §4 model —
+each invariant, the three migration-contract scenarios of issue #3 §4, and generated
+operation sequences checked for invariant preservation at every step. The same suite runs
+against two independent implementations through an `EconomicHarness` adapter:
+
+- the in-memory reference adapter, which embeds `packages/economic-kernel`
+  (`@communitytoken/economic-kernel`) — the pure transition evaluator of §6;
+- the DO + SQLite proof of concept above, exercising the production path end to end.
+
 ### Pending Phase 1 evidence
 
-- Storage-independent contract tests that verify each economic invariant of §4 by name, including
-  the domain boundaries and overflow rejection of §3. They are the compatibility contract for any
-  storage backend.
-- The minimal runtime-independent kernel those tests run against.
-
-When the contract-test work lands, its entries move from pending to validated.
+None.

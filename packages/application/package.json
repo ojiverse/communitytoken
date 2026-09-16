@@ -1,0 +1,21 @@
+{
+	"name": "@communitytoken/application",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"scripts": {
+		"test": "vitest run",
+		"check": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@communitytoken/economic-kernel": "workspace:*"
+	},
+	"devDependencies": {
+		"@tsconfig/strictest": "2.0.8",
+		"typescript": "7.0.2",
+		"vitest": "4.1.11"
+	}
+}

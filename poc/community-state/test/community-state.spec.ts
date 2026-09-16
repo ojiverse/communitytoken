@@ -105,7 +105,7 @@ describe("CommunityState DO + SQLite persistence PoC", () => {
 		await s.distribute("alice", 10);
 
 		await expect(s.transferP2P("alice", "bob", 20)).rejects.toThrow(
-			/insufficient balance/,
+			/INSUFFICIENT_BALANCE/,
 		);
 
 		expect(await s.getBalance("alice")).toBe(10);

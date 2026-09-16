@@ -9,6 +9,7 @@
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "0.22.0",
+		"@communitytoken/economic-contract": "workspace:*",
 		"@tsconfig/strictest": "2.0.8",
 		"typescript": "7.0.2",
 		"vitest": "4.1.11",

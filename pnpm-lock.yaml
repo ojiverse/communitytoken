@@ -45,8 +45,23 @@ importers:
         specifier: 5.9.2
         version: 5.9.2
 
+  packages/economic-contract:
+    devDependencies:
+      '@tsconfig/strictest':
+        specifier: 2.0.8
+        version: 2.0.8
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+      vitest:
+        specifier: 4.1.11
+        version: 4.1.11(@types/node@24.3.0)(vite@8.3.0(@types/node@24.3.0)(esbuild@0.28.1)(tsx@4.20.4)(yaml@2.8.1))
+
   packages/economic-kernel:
     devDependencies:
+      '@communitytoken/economic-contract':
+        specifier: workspace:*
+        version: link:../economic-contract
       '@tsconfig/strictest':
         specifier: 2.0.8
         version: 2.0.8
@@ -62,6 +77,9 @@ importers:
       '@cloudflare/vitest-pool-workers':
         specifier: 0.22.0
         version: 0.22.0(@cloudflare/workers-types@5.20260908.1)(@vitest/runner@4.1.11)(@vitest/snapshot@4.1.11)(vitest@4.1.11(@types/node@24.3.0)(vite@8.3.0(@types/node@24.3.0)(esbuild@0.28.1)(tsx@4.20.4)(yaml@2.8.1)))
+      '@communitytoken/economic-contract':
+        specifier: workspace:*
+        version: link:../../packages/economic-contract
       '@tsconfig/strictest':
         specifier: 2.0.8
         version: 2.0.8

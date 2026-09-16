@@ -20,30 +20,38 @@ type OperationKind =
 	| "P2P_TRANSFER"
 	| "TREASURY_PAYMENT";
 
-interface WalletRow {
-	id: string;
-	kind: WalletKind;
-	balance: number;
-	created_at: number;
-	updated_at: number;
-}
+type WalletRow = {
+	readonly id: string;
+	readonly kind: WalletKind;
+	readonly balance: number;
+	readonly created_at: number;
+	readonly updated_at: number;
+};
 
-interface LedgerRow {
-	id: string;
-	operation_id: string;
-	from_wallet_id: string;
-	to_wallet_id: string;
-	amount: number;
-	created_at: number;
-}
+type LedgerRow = {
+	readonly id: string;
+	readonly operation_id: string;
+	readonly from_wallet_id: string;
+	readonly to_wallet_id: string;
+	readonly amount: number;
+	readonly created_at: number;
+};
 
-interface OperationRow {
-	id: string;
-	kind: OperationKind;
-	actor_wallet_id: string | null;
-	metadata: string | null;
-	created_at: number;
-}
+type OperationRow = {
+	readonly id: string;
+	readonly kind: OperationKind;
+	readonly actor_wallet_id: string | null;
+	readonly metadata: string | null;
+	readonly created_at: number;
+};
+
+type OperationParams = {
+	readonly kind: OperationKind;
+	readonly fromWalletId: string;
+	readonly toWalletId: string;
+	readonly amount: number;
+	readonly metadata?: string;
+};
 
 const TREASURY_WALLET_ID = "treasury";
 
@@ -147,13 +155,7 @@ export class CommunityState extends DurableObject {
 	 *   read balances -> evaluate invariants -> update balances
 	 *   -> persist EconomicOperation -> append ledger entries -> commit atomically
 	 */
-	private applyOperation(params: {
-		kind: OperationKind;
-		fromWalletId: string;
-		toWalletId: string;
-		amount: number;
-		metadata?: string;
-	}): string {
+	private applyOperation(params: OperationParams): string {
 		const { kind, fromWalletId, toWalletId, amount, metadata } = params;
 
 		if (!Number.isSafeInteger(amount) || amount <= 0) {
@@ -307,7 +309,7 @@ export class CommunityState extends DurableObject {
 		);
 	}
 
-	listOperations(): OperationRow[] {
+	listOperations(): readonly OperationRow[] {
 		return this.ctx.storage.sql
 			.exec(
 				"SELECT id, kind, actor_wallet_id, metadata, created_at FROM economic_operations ORDER BY rowid",
@@ -315,7 +317,7 @@ export class CommunityState extends DurableObject {
 			.toArray() as unknown as OperationRow[];
 	}
 
-	listLedger(): LedgerRow[] {
+	listLedger(): readonly LedgerRow[] {
 		return this.ctx.storage.sql
 			.exec(
 				"SELECT id, operation_id, from_wallet_id, to_wallet_id, amount, created_at FROM ledger_transactions ORDER BY rowid",
@@ -332,7 +334,10 @@ export default {
 		const url = new URL(request.url);
 
 		if (request.method === "POST" && url.pathname === "/wallets") {
-			const body = (await request.json()) as { id: string; kind?: WalletKind };
+			const body = (await request.json()) as {
+				readonly id: string;
+				readonly kind?: WalletKind;
+			};
 			await stub.createWallet(body.id, body.kind ?? "user");
 			return Response.json({ id: body.id }, { status: 201 });
 		}
@@ -347,16 +352,18 @@ export default {
 		}
 
 		if (request.method === "POST" && url.pathname === "/issue") {
-			const { amount } = (await request.json()) as { amount: number };
+			const { amount } = (await request.json()) as {
+				readonly amount: number;
+			};
 			return Response.json({ operationId: await stub.issue(amount) });
 		}
 
 		if (request.method === "POST" && url.pathname === "/transfer") {
 			const body = (await request.json()) as {
-				from: string;
-				to: string;
-				amount: number;
-				kind?: OperationKind;
+				readonly from: string;
+				readonly to: string;
+				readonly amount: number;
+				readonly kind?: OperationKind;
 			};
 			try {
 				const operationId =

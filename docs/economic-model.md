@@ -245,6 +245,10 @@ absent on purpose; the record explains what would own the concern if it returns.
   example, a reward kind when Daily Reward is implemented). No speculative kinds.
 - **Reversal or correction kinds** — corrections are ordinary new operations; the incorrect entry
   remains as history. No special reversal semantics in Phase 1.
+- **Ruleset versioning** — issue #3's conceptual schema lists `ruleset_version` on the operation
+  record. No versioned ruleset exists yet: §3 is the only ruleset, so the field would store a
+  constant. When operation semantics evolve, the operation record is where the version belongs;
+  the field arrives with the first versioning requirement, not before.
 - **External identity binding** — OIDC `iss`/`sub` binding is Phase 2. A user is currently only an
   internal anchor for wallet ownership.
 
@@ -263,11 +267,14 @@ persistence consistency guarantees of §4:
 - storage-enforced append-only ledger;
 - persistence across Durable Object eviction.
 
+The storage-independent half of §4 is verified by `packages/economic-kernel`
+(`@communitytoken/economic-kernel`):
+
+- a contract test suite verifies each economic invariant of §4 by name, including the §3 domain
+  boundaries and overflow rejection, plus the three migration-contract scenarios of issue #3 §4;
+- the suite runs against the minimal runtime-independent kernel those tests target, with time and
+  identifier generation injected as ports per §6 — no storage or platform types appear in it.
+
 ### Pending Phase 1 evidence
 
-- Storage-independent contract tests that verify each economic invariant of §4 by name, including
-  the domain boundaries and overflow rejection of §3. They are the compatibility contract for any
-  storage backend.
-- The minimal runtime-independent kernel those tests run against.
-
-When the contract-test work lands, its entries move from pending to validated.
+None.

@@ -4,8 +4,8 @@ Normative specification of the CommunityToken economic core for the Cloudflare r
 
 - Phase 1 deliverable of the rebuild roadmap; tracking issue #3.
 - Issue #2 is the architectural source of truth. Where this document and #2 disagree, #2 wins.
-- Legacy documents (`design.md`, `database.md`, `features.md`, `tech.md`) describe the
-  Supabase/PostgreSQL implementation and are retained as reference material only. They are not
+- The legacy documents describing the Supabase/PostgreSQL implementation were deleted from the
+  working tree during Phase 2 cleanup (issue #4 §20); git history preserves them. They are not
   normative for the rebuild.
 
 ## 1. Scope

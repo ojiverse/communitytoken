@@ -1,11 +1,10 @@
 packages:
+  - apps/*
   - poc/*
   - packages/*
 
 ignoredBuiltDependencies:
   - esbuild
-  - supabase
 
 onlyBuiltDependencies:
   - simple-git-hooks
-  - supabase

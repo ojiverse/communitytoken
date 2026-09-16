@@ -153,9 +153,5 @@ dist
 
 # End of https://www.toptal.com/developers/gitignore/api/deno,node
 
-# Supabase
-.branches
-.temp
-
 # Claude Code
 CLAUDE.*.md

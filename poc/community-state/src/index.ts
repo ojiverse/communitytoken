@@ -5,7 +5,7 @@ import { DurableObject } from "cloudflare:workers";
  *
  * Proves that the target production consistency model —
  *   Worker -> single named CommunityState Durable Object -> SQLite storage —
- * can preserve the economic invariants of the existing Supabase/PostgreSQL
+ * can preserve the economic invariants of the legacy Supabase/PostgreSQL
  * implementation without row locks or triggers.
  *
  * All mutable state lives in `ctx.storage.sql`. The DO keeps no cached state

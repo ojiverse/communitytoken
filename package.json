@@ -8,15 +8,6 @@
 		"node": ">=22.0.0",
 		"pnpm": ">=10.0.0"
 	},
-	"scripts": {
-		"supabase:start": "supabase start --workdir apps/api",
-		"supabase:stop": "supabase stop --workdir apps/api --no-backup",
-		"supabase:status": "supabase status --workdir apps/api",
-		"supabase:serve": "supabase functions serve --workdir apps/api --no-verify-jwt",
-		"supabase:db:reset": "supabase db reset --workdir apps/api",
-		"supabase:types:gen": "supabase gen types typescript --workdir apps/api --local > apps/api/src/lib/database.types.ts",
-		"supabase:types:verify": "supabase gen types typescript --workdir apps/api --project-id \"$SUPABASE_PROJECT_REF\" > apps/api/src/lib/database.types.prod.ts && diff apps/api/src/lib/database.types.ts apps/api/src/lib/database.types.prod.ts"
-	},
 	"lint-staged": {
 		"*": "secretlint",
 		"*.{js,ts,cjs,mjs,d.cts,d.mts,jsx,tsx,json,jsonc}": "biome check --write --unsafe --no-errors-on-unmatched --files-ignore-unknown=true"
@@ -37,7 +28,6 @@
 		"lint-staged": "16.1.5",
 		"secretlint": "11.0.2",
 		"simple-git-hooks": "2.13.1",
-		"supabase": "2.54.11",
 		"tsx": "4.20.4",
 		"typescript": "5.9.2"
 	}

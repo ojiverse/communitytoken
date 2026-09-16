@@ -1,0 +1,17 @@
+{
+	"name": "@communitytoken/poc-community-state",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"test": "vitest run",
+		"check": "tsc --noEmit"
+	},
+	"devDependencies": {
+		"@cloudflare/vitest-pool-workers": "0.22.0",
+		"@tsconfig/strictest": "2.0.8",
+		"typescript": "7.0.2",
+		"vitest": "4.1.11",
+		"wrangler": "4.130.0"
+	}
+}

@@ -140,7 +140,8 @@ Rules applying to every kind:
   from the row. Every other kind requires `from.balance >= amount` and is rejected otherwise.
 - A non-issuance transfer whose source and destination are the same wallet (a self-transfer) is
   valid and net-zero: it records an operation and ledger entry while moving no balance (§4 delta
-  semantics). No other operation may target the same wallet twice.
+  semantics). Among non-issuance kinds, only `P2P_TRANSFER` can satisfy `from = to` under the
+  direction rules; `TOKEN_ISSUANCE` is separately defined as the treasury-to-treasury credit.
 - For each accepted operation, the balance updates, the EconomicOperation record, and the ledger
   entry commit atomically. A failure at any point leaves all state untouched.
 - Wallet-kind direction is enforced per the table: a kind used with any other direction is
@@ -197,13 +198,18 @@ The economic invariants above are fixed by a state-transition model. Let `M = 2^
 - `U` — users; `W` — wallets; `O` — operations (ordered history); `L` — ledger entries (ordered
   history).
 - `owns : U -> W` maps each user to its wallet; `kind : W -> {user, system}` and
-  `balance : W -> Z` give each wallet its attributes.
+  `balance : W -> Z` give each wallet its attributes; `op : L -> O` maps each ledger entry to
+  the operation that caused it.
 
 Structural invariants:
 
 - Unique treasury: `exists! T in W : kind(T) = system`. `T` is the only system wallet.
 - One wallet per user: `forall u in U: exists! w in W : owns(u) = w and kind(w) = user`, and
   `owns` is injective — no two users share a wallet.
+- Operation/ledger correspondence (Phase 1): `op` is a bijection —
+  `forall l in L: exists! o in O : op(l) = o` and `forall o in O: exists! l in L : op(l) = o`.
+  Every movement is explained by exactly one operation and every operation records exactly one
+  ledger entry.
 - Initial state `S0 = (empty, {T}, [], [])` with `balance(T) = 0`.
 
 **Monetary domains and supply.**
@@ -218,6 +224,21 @@ issued(S) = sum over l in L where operation(l).kind = TOKEN_ISSUANCE of l.amount
 ```
 
 The accounting invariant is `I_supply(S): issued(S) = supply(S) and supply(S) <= M`.
+
+**Lifecycle transitions.** Beyond economic commands, structural transitions change `U` and `W`
+without moving tokens. Phase 1 has exactly one, an account-lifecycle concern owned by the
+application layer rather than the economic evaluator:
+
+```text
+RegisterUser(u, w)
+
+Pre:   u notin U;  w notin W
+Post:  U' = U ∪ {u};  W' = W ∪ {w};  owns'(u) = w;  kind'(w) = user;  balance'(w) = 0
+       owns/kind/balance unchanged elsewhere;  O' = O;  L' = L
+```
+
+With it, the trace `S0 -> RegisterUser(Alice) -> RegisterUser(Bob) -> TOKEN_ISSUANCE ->
+DISTRIBUTION -> P2P_TRANSFER` is valid in the model.
 
 **Commands and transitions.** A command is `C = (kind, from, to, amount, metadata)`. Operation
 evaluation is a partial transition relation `S --C--> S'`: when the preconditions hold the
@@ -246,25 +267,32 @@ The resulting balance is `balance'(w) = balance(w) + Delta_C(w)`. For a self-tra
 (`from = to`) the indicator form gives `Delta_C(from) = -amount + amount = 0` — order-free and
 supply-preserving by construction.
 
-**History transition.** An accepted transition appends: `O' = O ++ [operation]` and
-`L' = L ++ [entry]`, so `O` is a prefix of `O'` and `L` a prefix of `L'`. A rejected command
-produces `S' = S` with nothing appended — the formal content of "rejection leaves no trace".
+**History transition.** An accepted transition creates fresh records `o_new notin O` and
+`l_new notin L` bound by `op(l_new) = o_new`, with `o_new.kind = C.kind`, `l_new.from = C.from`,
+`l_new.to = C.to`, `l_new.amount = C.amount`; then `O' = O ++ [o_new]` and `L' = L ++ [l_new]`,
+so `O` is a prefix of `O'` and `L` a prefix of `L'`. A rejected command produces `S' = S` with
+nothing appended — the formal content of "rejection leaves no trace".
 
 ### Invariant preservation
 
 Each accepted transition preserves the invariants: `I(S)` and `Pre(S, C)` imply `I(S')`.
 
 - **Supply conservation (non-issuance)** — `sum over w of Delta_C(w) = -amount + amount = 0`, so
-  `supply(S') = supply(S)`. The indicator form covers self-transfers identically.
-- **Issuance-only supply growth** — issuance has `sum Delta_C = +amount` and appends one
-  `TOKEN_ISSUANCE` ledger entry of `amount`, so `issued(S') = issued(S) + amount` and
-  `supply(S') = supply(S) + amount`. By induction over the history, `issued(S) = supply(S)` holds
-  in every reachable state, given `issued(S0) = supply(S0) = 0`.
+  `supply(S') = supply(S)`. The indicator form covers self-transfers identically. And since
+  `o_new.kind != TOKEN_ISSUANCE`, `issued(S') = issued(S)`; together `issued(S') = supply(S')`.
+- **Issuance-only supply growth** — issuance has `sum Delta_C = +amount`, so
+  `supply(S') = supply(S) + amount`. The appended records satisfy `o_new.kind = TOKEN_ISSUANCE`
+  and `l_new.amount = C.amount`, hence by the definition of `issued`,
+  `issued(S') = issued(S) + amount`. Combined, `issued(S') = supply(S')`, and by induction over
+  the history `issued(S) = supply(S)` holds in every reachable state, given
+  `issued(S0) = supply(S0) = 0`.
 - **Balance range** — preconditions require `balance(w) + Delta_C(w) in WalletBalance` for every
   `w`, so `balance'(w)` remains in range.
-- **Structure** — transitions touch only balances and histories; `owns`, `kind`, and the unique
-  treasury are established at construction and never modified, so the structural invariants are
-  preserved trivially.
+- **Structure** — economic transitions touch only balances and histories. The lifecycle
+  transition `RegisterUser(u, w)` is the only other way `U`/`W`/`owns` change: it moves no tokens
+  (`O' = O`, `L' = L`, so supply and issued are preserved), requires `u notin U` and a fresh
+  user-kind `w`, and so preserves unique treasury, one-wallet-per-user, and injectivity of
+  `owns`.
 - **Append-only** — histories grow by concatenation only; no transition updates or deletes an
   existing entry.
 - **Rejection** — `S' = S`, so every invariant is preserved trivially.

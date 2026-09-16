@@ -8,13 +8,21 @@
  */
 
 /**
- * A wallet reference as the contract suite expresses it: a user id registered
- * through `createUser`, or the {@link TREASURY_REF} sentinel for the treasury.
+ * A wallet reference as the contract suite expresses it. The tagged union keeps
+ * the treasury sentinel in its own namespace: an opaque user id equal to the
+ * sentinel's spelling can never collide with it.
  */
-export type WalletRef = string;
+export type WalletRef =
+	| { readonly type: "treasury" }
+	| { readonly type: "user"; readonly userId: string };
 
 /** Refers to the deployment's single system wallet in commands and queries. */
-export const TREASURY_REF = "treasury";
+export const TREASURY_REF: WalletRef = { type: "treasury" };
+
+/** Refers to the wallet of a user registered through `createUser`. */
+export function userRef(userId: string): WalletRef {
+	return { type: "user", userId };
+}
 
 export type OperationKind =
 	| "TOKEN_ISSUANCE"

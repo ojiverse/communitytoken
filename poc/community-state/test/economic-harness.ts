@@ -5,7 +5,8 @@ import {
 	type LedgerView,
 	type OperationView,
 	type RejectionCode,
-	TREASURY_REF,
+	userRef,
+	type WalletRef,
 } from "@communitytoken/economic-contract";
 import type { CommunityState } from "../src/index";
 
@@ -23,10 +24,11 @@ function rejectionCode(error: unknown): RejectionCode | undefined {
 	return REJECTION_CODES.find((c) => c === prefix);
 }
 
-function walletId(ref: string): string {
-	// The PoC addresses wallets directly by id; the harness's user ids are
-	// used as wallet ids, and TREASURY_REF names the singleton treasury.
-	return ref === TREASURY_REF ? "treasury" : ref;
+function walletId(ref: WalletRef): string {
+	// The PoC addresses wallets directly by id. User wallets live under the
+	// "u:" namespace so an opaque user id can never alias the singleton
+	// treasury wallet id "treasury".
+	return ref.type === "treasury" ? "treasury" : `u:${ref.userId}`;
 }
 
 /**
@@ -44,7 +46,7 @@ export function createPocHarness(
 		},
 
 		async createUser(userId: string) {
-			await stub.createWallet(walletId(userId));
+			await stub.createWallet(walletId(userRef(userId)));
 		},
 
 		async apply(command: HarnessCommand): Promise<HarnessResult> {
@@ -66,7 +68,7 @@ export function createPocHarness(
 			}
 		},
 
-		async balanceOf(ref: string) {
+		async balanceOf(ref: WalletRef) {
 			return stub.getBalance(walletId(ref));
 		},
 

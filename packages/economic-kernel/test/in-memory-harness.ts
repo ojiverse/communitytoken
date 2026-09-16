@@ -1,10 +1,10 @@
-import {
-	type EconomicHarness,
-	type HarnessCommand,
-	type HarnessResult,
-	type LedgerView,
-	type OperationView,
-	TREASURY_REF,
+import type {
+	EconomicHarness,
+	HarnessCommand,
+	HarnessResult,
+	LedgerView,
+	OperationView,
+	WalletRef,
 } from "@communitytoken/economic-contract";
 import {
 	evaluateOperation,
@@ -47,8 +47,14 @@ export function createInMemoryHarness(): EconomicHarness {
 	}
 	init();
 
-	function walletIdOf(ref: string): string | undefined {
-		return ref === TREASURY_REF ? TREASURY_WALLET_ID : users.get(ref);
+	function walletIdOf(ref: WalletRef): string | undefined {
+		return ref.type === "treasury" ? TREASURY_WALLET_ID : users.get(ref.userId);
+	}
+
+	// Only reached for refs that did not resolve: an unknown user ref. The
+	// treasury ref always resolves, so no opaque user id can alias it here.
+	function unresolvedId(ref: WalletRef): string {
+		return ref.type === "treasury" ? TREASURY_WALLET_ID : `user:${ref.userId}`;
 	}
 
 	function factsOf(id: string | undefined): WalletFacts | undefined {
@@ -86,8 +92,8 @@ export function createInMemoryHarness(): EconomicHarness {
 				},
 				{
 					kind: command.kind,
-					fromWalletId: fromId ?? command.from,
-					toWalletId: toId ?? command.to,
+					fromWalletId: fromId ?? unresolvedId(command.from),
+					toWalletId: toId ?? unresolvedId(command.to),
 					amount: command.amount,
 					...(command.metadata === undefined
 						? {}
@@ -128,10 +134,10 @@ export function createInMemoryHarness(): EconomicHarness {
 			return { accepted: true };
 		},
 
-		async balanceOf(ref: string) {
+		async balanceOf(ref: WalletRef) {
 			const id = walletIdOf(ref);
 			const wallet = id === undefined ? undefined : wallets.get(id);
-			if (!wallet) throw new Error(`no wallet for ref: ${ref}`);
+			if (!wallet) throw new Error(`no wallet for ref: ${JSON.stringify(ref)}`);
 			return wallet.balance;
 		},
 

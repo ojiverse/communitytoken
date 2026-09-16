@@ -6,6 +6,7 @@ import {
 	type LedgerView,
 	type OperationView,
 	TREASURY_REF,
+	userRef,
 } from "./harness";
 
 const M = Number.MAX_SAFE_INTEGER;
@@ -29,7 +30,7 @@ async function distribute(
 	return h.apply({
 		kind: "DISTRIBUTION",
 		from: TREASURY_REF,
-		to,
+		to: userRef(to),
 		amount,
 		...(metadata === undefined ? {} : { metadata }),
 	});
@@ -41,11 +42,21 @@ async function transfer(
 	to: string,
 	amount: number,
 ) {
-	return h.apply({ kind: "P2P_TRANSFER", from, to, amount });
+	return h.apply({
+		kind: "P2P_TRANSFER",
+		from: userRef(from),
+		to: userRef(to),
+		amount,
+	});
 }
 
 async function payTreasury(h: EconomicHarness, from: string, amount: number) {
-	return h.apply({ kind: "TREASURY_PAYMENT", from, to: TREASURY_REF, amount });
+	return h.apply({
+		kind: "TREASURY_PAYMENT",
+		from: userRef(from),
+		to: TREASURY_REF,
+		amount,
+	});
 }
 
 type Snapshot = {
@@ -91,7 +102,7 @@ function genCommand(
 	rng: () => number,
 	users: readonly string[],
 ): HarnessCommand {
-	const refs: readonly string[] = [...users, TREASURY_REF, "ghost"];
+	const refs = [...users.map(userRef), TREASURY_REF, userRef("ghost")];
 	const r = rng();
 	if (r < 0.18) {
 		return {
@@ -148,8 +159,8 @@ export function defineEconomicContract(
 				const r = await transfer(h, "alice", "bob", 30);
 
 				expect(r.accepted).toBe(true);
-				expect(await h.balanceOf("alice")).toBe(70);
-				expect(await h.balanceOf("bob")).toBe(30);
+				expect(await h.balanceOf(userRef("alice"))).toBe(70);
+				expect(await h.balanceOf(userRef("bob"))).toBe(30);
 				expect(await h.totalSupply()).toBe(supplyBefore);
 			});
 
@@ -202,8 +213,20 @@ export function defineEconomicContract(
 				const h = factory();
 				await h.reset();
 				await h.createUser("alice");
-				expect(await h.balanceOf("alice")).toBe(0);
+				expect(await h.balanceOf(userRef("alice"))).toBe(0);
 				await expect(h.createUser("alice")).rejects.toThrow();
+			});
+
+			it("an opaque user id spelled like the treasury sentinel does not collide", async () => {
+				const h = factory();
+				await h.reset();
+				await h.createUser("treasury");
+				await issue(h, 100);
+				await distribute(h, "treasury", 40);
+
+				expect(await h.balanceOf(userRef("treasury"))).toBe(40);
+				expect(await h.balanceOf(TREASURY_REF)).toBe(60);
+				expect(await h.totalSupply()).toBe(100);
 			});
 		});
 
@@ -269,7 +292,7 @@ export function defineEconomicContract(
 						{
 							kind: "TOKEN_ISSUANCE",
 							from: TREASURY_REF,
-							to: "alice",
+							to: userRef("alice"),
 							amount: 1,
 						},
 					],
@@ -277,8 +300,8 @@ export function defineEconomicContract(
 						"issuance cannot self-transfer a user wallet",
 						{
 							kind: "TOKEN_ISSUANCE",
-							from: "alice",
-							to: "alice",
+							from: userRef("alice"),
+							to: userRef("alice"),
 							amount: 1,
 						},
 					],
@@ -286,8 +309,8 @@ export function defineEconomicContract(
 						"distribution must be system -> user",
 						{
 							kind: "DISTRIBUTION",
-							from: "alice",
-							to: "bob",
+							from: userRef("alice"),
+							to: userRef("bob"),
 							amount: 1,
 						},
 					],
@@ -305,7 +328,7 @@ export function defineEconomicContract(
 						{
 							kind: "P2P_TRANSFER",
 							from: TREASURY_REF,
-							to: "alice",
+							to: userRef("alice"),
 							amount: 1,
 						},
 					],
@@ -419,7 +442,7 @@ export function defineEconomicContract(
 				const r = await transfer(h, "alice", "alice", 30);
 
 				expect(r.accepted).toBe(true);
-				expect(await h.balanceOf("alice")).toBe(100);
+				expect(await h.balanceOf(userRef("alice"))).toBe(100);
 				expect(await h.totalSupply()).toBe(100);
 				expect((await h.operations()).length).toBe(opsBefore + 1);
 				expect((await h.ledger()).length).toBe(ledgerBefore + 1);
@@ -473,8 +496,8 @@ export function defineEconomicContract(
 				expect(await h.totalSupply()).toBe(230);
 				const sum =
 					(await h.balanceOf(TREASURY_REF)) +
-					(await h.balanceOf("alice")) +
-					(await h.balanceOf("bob"));
+					(await h.balanceOf(userRef("alice"))) +
+					(await h.balanceOf(userRef("bob")));
 				expect(sum).toBe(230);
 			});
 		});
@@ -513,7 +536,7 @@ export function defineEconomicContract(
 						let balanceSum = after.treasury;
 						expect(after.treasury).toBeGreaterThanOrEqual(0);
 						for (const u of users) {
-							const b = await h.balanceOf(u);
+							const b = await h.balanceOf(userRef(u));
 							expect(
 								b,
 								`step ${step}: ${u} balance in domain`,

@@ -40,7 +40,6 @@ type LedgerRow = {
 type OperationRow = {
 	readonly id: string;
 	readonly kind: OperationKind;
-	readonly actor_wallet_id: string | null;
 	readonly metadata: string | null;
 	readonly created_at: number;
 };
@@ -68,7 +67,6 @@ CREATE TABLE IF NOT EXISTS economic_operations (
   id TEXT PRIMARY KEY,
   kind TEXT NOT NULL CHECK (kind IN
     ('TOKEN_ISSUANCE', 'DISTRIBUTION', 'P2P_TRANSFER', 'TREASURY_PAYMENT')),
-  actor_wallet_id TEXT,
   metadata TEXT,
   created_at INTEGER NOT NULL
 );
@@ -200,6 +198,22 @@ export class CommunityState extends DurableObject {
 				);
 			}
 
+			// §3 overflow rejection: no credit may push a wallet balance or the
+			// total supply above the 2^53-1 domain.
+			if (to.balance + amount > Number.MAX_SAFE_INTEGER) {
+				throw new Error("credit would overflow the wallet balance domain");
+			}
+			if (kind === "TOKEN_ISSUANCE") {
+				const supply = Number(
+					this.ctx.storage.sql
+						.exec("SELECT COALESCE(SUM(balance), 0) AS total FROM wallets")
+						.one()["total"],
+				);
+				if (supply + amount > Number.MAX_SAFE_INTEGER) {
+					throw new Error("issuance would overflow the total supply domain");
+				}
+			}
+
 			if (kind !== "TOKEN_ISSUANCE") {
 				this.ctx.storage.sql.exec(
 					"UPDATE wallets SET balance = balance - ?, updated_at = ? WHERE id = ?",
@@ -216,10 +230,9 @@ export class CommunityState extends DurableObject {
 			);
 
 			this.ctx.storage.sql.exec(
-				"INSERT INTO economic_operations (id, kind, actor_wallet_id, metadata, created_at) VALUES (?, ?, ?, ?, ?)",
+				"INSERT INTO economic_operations (id, kind, metadata, created_at) VALUES (?, ?, ?, ?)",
 				opId,
 				kind,
-				from.id,
 				metadata ?? null,
 				t,
 			);
@@ -312,7 +325,7 @@ export class CommunityState extends DurableObject {
 	listOperations(): readonly OperationRow[] {
 		return this.ctx.storage.sql
 			.exec(
-				"SELECT id, kind, actor_wallet_id, metadata, created_at FROM economic_operations ORDER BY rowid",
+				"SELECT id, kind, metadata, created_at FROM economic_operations ORDER BY rowid",
 			)
 			.toArray() as unknown as OperationRow[];
 	}

@@ -18,6 +18,8 @@ SQLite-backed storage           (ctx.storage.sql)
   transaction (`ctx.storage.transactionSync`)
 - Concurrent transfer requests serialize correctly — no double-spend, no lost
   updates
+- Credits that would push a wallet balance or total supply above the 2^53-1
+  monetary domain are rejected
 - Failed transfers roll back atomically: no balance change, no ledger/operation
   rows
 - Ledger history is append-only at the storage level (SQLite triggers)
@@ -33,6 +35,9 @@ SQLite-backed storage           (ctx.storage.sql)
   SQLite — so eviction is safe by construction.
 - `transferP2PUnsafe` exists only to demonstrate why the transaction boundary
   matters. Do not carry it into production code.
+- `economic_operations` has no actor column on purpose: the spec (§7) defers
+  initiator modeling, and an actor must never be an alias for `from_wallet`.
+  Do not reintroduce one here.
 
 ## Run
 

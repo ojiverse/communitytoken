@@ -139,6 +139,27 @@ describe("CommunityState DO + SQLite persistence PoC", () => {
 		await expect(s.transferP2P("alice", "bob", 1.5)).rejects.toThrow();
 	});
 
+	it("rejects a credit that would overflow the wallet balance domain", async () => {
+		const s = freshStub();
+		await s.issue(Number.MAX_SAFE_INTEGER);
+
+		await expect(s.issue(1)).rejects.toThrow(/overflow/);
+		expect(await s.getBalance("treasury")).toBe(Number.MAX_SAFE_INTEGER);
+		expect(await sumBalances(s)).toBe(Number.MAX_SAFE_INTEGER);
+	});
+
+	it("rejects issuance that would overflow total supply even when treasury has headroom", async () => {
+		const s = freshStub();
+		await s.createWallet("alice");
+		await s.issue(Number.MAX_SAFE_INTEGER);
+		await s.distribute("alice", 5);
+		// treasury = MAX-5 has room for +3, but supply is already at MAX
+
+		await expect(s.issue(3)).rejects.toThrow(/overflow/);
+		expect(await s.getBalance("treasury")).toBe(Number.MAX_SAFE_INTEGER - 5);
+		expect(await sumBalances(s)).toBe(Number.MAX_SAFE_INTEGER);
+	});
+
 	it("rejects operations with wrong wallet-kind direction", async () => {
 		const s = freshStub();
 		await s.createWallet("alice");

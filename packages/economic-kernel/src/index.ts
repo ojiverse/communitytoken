@@ -1,16 +1,15 @@
 /**
- * Runtime-independent economic kernel for the CommunityToken rebuild.
+ * Runtime-independent economic evaluator for the CommunityToken rebuild.
  *
- * Owns the operation semantics of docs/economic-model.md §3 and the economic
- * invariants of §4. No Cloudflare, storage, or platform types appear here;
- * time and identifier generation are injected ports per §6, so the kernel is
- * deterministic under test and embeddable inside the CommunityState Durable
- * Object, which applies accepted decisions inside its storage transaction.
- *
- * The kernel never mutates: `evaluateOperation` reads state and returns a
- * decision, and `commitOperation` returns a new CommunityState. A rejected
- * decision carries no operation, ledger entry, or balance change, so
- * "rejection leaves no trace" is a type-level fact, not a runtime check.
+ * Owns the transition rules of docs/economic-model.md §3 and the preconditions
+ * of the §4 formal model. This is the production-bound economic kernel: a pure
+ * function from current economic facts plus a command to either a rejection or
+ * an `EconomicEffect`. It owns nothing else — no state, history, users,
+ * storage, clock, or identifier allocation. Durable record identity and commit
+ * timestamps are allocated at the persistence boundary that applies the
+ * effect; balance deltas are expressed per wallet (§4 delta semantics), so a
+ * self-transfer is a recorded net-zero movement rather than an error or a
+ * supply leak.
  */
 
 /** Upper bound of every monetary domain (§3): TokenAmount, WalletBalance, TotalSupply. */
@@ -27,71 +26,22 @@ export type OperationKind =
 	| "P2P_TRANSFER"
 	| "TREASURY_PAYMENT";
 
-export type User = {
-	readonly id: string;
-	readonly walletId: string;
-	readonly createdAt: number;
-};
-
-export type Wallet = {
+/**
+ * The facts about one wallet that the transition rules read. Callers resolve
+ * command wallet references to facts — `undefined` means the wallet does not
+ * exist and the evaluator will reject with `WALLET_NOT_FOUND`.
+ */
+export type WalletFacts = {
 	readonly id: string;
 	readonly kind: WalletKind;
 	readonly balance: number;
-	readonly createdAt: number;
 };
 
-export type EconomicOperation = {
-	readonly id: string;
-	readonly kind: OperationKind;
-	readonly metadata: string | null;
-	readonly createdAt: number;
-};
-
-export type LedgerTransaction = {
-	readonly id: string;
-	readonly operationId: string;
-	readonly fromWalletId: string;
-	readonly toWalletId: string;
-	readonly amount: number;
-	readonly createdAt: number;
-};
-
-export type CommunityState = {
-	readonly users: ReadonlyMap<string, User>;
-	readonly wallets: ReadonlyMap<string, Wallet>;
-	readonly operations: readonly EconomicOperation[];
-	readonly ledger: readonly LedgerTransaction[];
-};
-
-/**
- * Wall-clock time source. The kernel calls it once per produced record; the
- * result is stamped as `createdAt`. Implementations must return epoch
- * milliseconds and must be monotonic enough that ordering by call sequence is
- * meaningful.
- */
-export interface Clock {
-	/**
-	 * Returns the current time in epoch milliseconds.
-	 * @throws {Error} when the underlying clock is unavailable.
-	 */
-	now(): number;
-}
-
-/**
- * Identifier source for users' wallets, operations, and ledger entries.
- * Identifiers are opaque to the kernel: it never parses or reuses them.
- */
-export interface IdGenerator {
-	/**
-	 * Returns a new identifier that is unique within the deployment.
-	 * @throws {Error} when no unused identifier can be produced.
-	 */
-	nextId(): string;
-}
-
-export type KernelPorts = {
-	readonly clock: Clock;
-	readonly ids: IdGenerator;
+/** Every economic fact a command's evaluation may read. */
+export type EconomicFacts = {
+	readonly from: WalletFacts | undefined;
+	readonly to: WalletFacts | undefined;
+	readonly totalSupply: number;
 };
 
 export type OperationCommand = {
@@ -109,21 +59,25 @@ export type RejectionCode =
 	| "INSUFFICIENT_BALANCE"
 	| "OVERFLOW";
 
-export type BalanceChange = {
-	readonly walletId: string;
-	readonly newBalance: number;
+/**
+ * The semantic effect of an accepted operation (§4 transition output):
+ * `deltas` maps each touched wallet to its signed balance change — the
+ * indicator-form `Delta_C(w)` of the formal model restricted to non-zero
+ * entries — while the remaining fields are the facts the persistence boundary
+ * records as the EconomicOperation and its LedgerTransaction.
+ */
+export type EconomicEffect = {
+	readonly kind: OperationKind;
+	readonly fromWalletId: string;
+	readonly toWalletId: string;
+	readonly amount: number;
+	readonly metadata: string | null;
+	readonly deltas: ReadonlyMap<string, number>;
 };
 
-/**
- * An operation the kernel approved. Committing it through `commitOperation`
- * — or persisting its `balanceChanges`, `operation`, and `ledgerEntry` inside
- * one storage transaction — is the only way economic state may change.
- */
 export type AcceptedOperation = {
 	readonly accepted: true;
-	readonly operation: EconomicOperation;
-	readonly ledgerEntry: LedgerTransaction;
-	readonly balanceChanges: readonly BalanceChange[];
+	readonly effect: EconomicEffect;
 };
 
 export type RejectedOperation = {
@@ -134,56 +88,10 @@ export type RejectedOperation = {
 
 export type OperationDecision = AcceptedOperation | RejectedOperation;
 
-/**
- * Creates the initial state of a deployment: one system wallet (the treasury)
- * and no users. Issuance is the only way value enters this state.
- */
-export function initializeCommunity(ports: KernelPorts): CommunityState {
-	const treasury: Wallet = {
-		id: TREASURY_WALLET_ID,
-		kind: "system",
-		balance: 0,
-		createdAt: ports.clock.now(),
-	};
-	return {
-		users: new Map(),
-		wallets: new Map([[treasury.id, treasury]]),
-		operations: [],
-		ledger: [],
-	};
-}
-
-/**
- * Registers a user and its single wallet (§4: one wallet per user).
- * @throws {Error} when `userId` is already registered.
- */
-export function registerUser(
-	state: CommunityState,
-	userId: string,
-	ports: KernelPorts,
-): CommunityState {
-	if (state.users.has(userId)) {
-		throw new Error(`user already registered: ${userId}`);
-	}
-	const createdAt = ports.clock.now();
-	const wallet: Wallet = {
-		id: ports.ids.nextId(),
-		kind: "user",
-		balance: 0,
-		createdAt,
-	};
-	const user: User = { id: userId, walletId: wallet.id, createdAt };
-	const wallets = new Map(state.wallets);
-	wallets.set(wallet.id, wallet);
-	const users = new Map(state.users);
-	users.set(user.id, user);
-	return { ...state, users, wallets };
-}
-
 function directionHolds(
 	kind: OperationKind,
-	from: Wallet,
-	to: Wallet,
+	from: WalletFacts,
+	to: WalletFacts,
 ): boolean {
 	switch (kind) {
 		case "TOKEN_ISSUANCE":
@@ -202,15 +110,18 @@ function reject(code: RejectionCode, detail: string): RejectedOperation {
 }
 
 /**
- * Evaluates a command against the current state without changing anything.
- * Validation order: amount domain, wallet existence, direction discipline,
- * funds, then the §3 overflow bounds. Returns a decision the caller may
- * commit; a rejected decision contains nothing committable.
+ * Evaluates a command against current economic facts. Pure and total: every
+ * input produces either a rejection (nothing committable exists) or an effect
+ * the caller persists atomically. Validation order follows §4: amount domain,
+ * wallet existence, direction discipline, funds, then the domain bounds of the
+ * resulting balances and total supply.
+ *
+ * @throws {Error} when `facts` was resolved against different wallet ids than
+ *   the command names — a caller contract violation, not a rejection.
  */
 export function evaluateOperation(
-	state: CommunityState,
+	facts: EconomicFacts,
 	command: OperationCommand,
-	ports: KernelPorts,
 ): OperationDecision {
 	const { kind, fromWalletId, toWalletId, amount, metadata } = command;
 
@@ -220,11 +131,16 @@ export function evaluateOperation(
 			`amount must be an integer in 1..${MAX_MONETARY_VALUE}, got ${amount}`,
 		);
 	}
-	const from = state.wallets.get(fromWalletId);
-	const to = state.wallets.get(toWalletId);
-	if (!from || !to) {
-		const missing = !from ? fromWalletId : toWalletId;
+	const { from, to, totalSupply } = facts;
+	if (from === undefined || to === undefined) {
+		const missing = from === undefined ? fromWalletId : toWalletId;
 		return reject("WALLET_NOT_FOUND", `wallet not found: ${missing}`);
+	}
+	if (from.id !== fromWalletId || to.id !== toWalletId) {
+		throw new Error(
+			`facts/command mismatch: command is ${fromWalletId} -> ${toWalletId}, ` +
+				`facts are ${from.id} -> ${to.id}`,
+		);
 	}
 	if (!directionHolds(kind, from, to)) {
 		return reject(
@@ -238,93 +154,45 @@ export function evaluateOperation(
 			`wallet ${from.id} has ${from.balance}, needs ${amount}`,
 		);
 	}
-	if (to.balance + amount > MAX_MONETARY_VALUE) {
-		return reject(
-			"OVERFLOW",
-			`credit would push wallet ${to.id} above ${MAX_MONETARY_VALUE}`,
-		);
+
+	const deltas = new Map<string, number>();
+	if (kind === "TOKEN_ISSUANCE") {
+		deltas.set(to.id, amount);
+	} else {
+		// Indicator-form Delta_C(w) = -amount*[w=from] + amount*[w=to]: a
+		// self-transfer cancels to an explicit zero, which is then dropped as
+		// a no-op balance change while the movement is still recorded.
+		deltas.set(from.id, (deltas.get(from.id) ?? 0) - amount);
+		deltas.set(to.id, (deltas.get(to.id) ?? 0) + amount);
+		if (deltas.get(from.id) === 0) deltas.delete(from.id);
 	}
-	if (
-		kind === "TOKEN_ISSUANCE" &&
-		totalSupply(state) + amount > MAX_MONETARY_VALUE
-	) {
+	// §4 precondition: every resulting balance stays in WalletBalance. A
+	// self-transfer produces no delta, so it can never overflow.
+	for (const [walletId, delta] of deltas) {
+		const wallet = walletId === from.id ? from : to;
+		if (wallet.balance + delta > MAX_MONETARY_VALUE) {
+			return reject(
+				"OVERFLOW",
+				`credit would push wallet ${walletId} above ${MAX_MONETARY_VALUE}`,
+			);
+		}
+	}
+	if (kind === "TOKEN_ISSUANCE" && totalSupply + amount > MAX_MONETARY_VALUE) {
 		return reject(
 			"OVERFLOW",
 			`issuance would push total supply above ${MAX_MONETARY_VALUE}`,
 		);
 	}
 
-	const createdAt = ports.clock.now();
-	const operation: EconomicOperation = {
-		id: ports.ids.nextId(),
-		kind,
-		metadata: metadata ?? null,
-		createdAt,
-	};
-	const ledgerEntry: LedgerTransaction = {
-		id: ports.ids.nextId(),
-		operationId: operation.id,
-		fromWalletId: from.id,
-		toWalletId: to.id,
-		amount,
-		createdAt,
-	};
-	const balanceChanges: readonly BalanceChange[] =
-		kind === "TOKEN_ISSUANCE"
-			? [{ walletId: to.id, newBalance: to.balance + amount }]
-			: [
-					{ walletId: from.id, newBalance: from.balance - amount },
-					{ walletId: to.id, newBalance: to.balance + amount },
-				];
-	return { accepted: true, operation, ledgerEntry, balanceChanges };
-}
-
-/**
- * Applies an accepted decision, returning the next state. Wallets are updated
- * in place inside a new map; the operation and its ledger entry are appended
- * to history. Prior entries are never touched.
- * @throws {Error} when a balance change references a wallet absent from state
- *   (i.e. the decision was evaluated against a different state).
- */
-export function commitOperation(
-	state: CommunityState,
-	decision: AcceptedOperation,
-): CommunityState {
-	const wallets = new Map(state.wallets);
-	for (const change of decision.balanceChanges) {
-		const wallet = wallets.get(change.walletId);
-		if (!wallet) {
-			throw new Error(`decision references unknown wallet: ${change.walletId}`);
-		}
-		wallets.set(wallet.id, { ...wallet, balance: change.newBalance });
-	}
 	return {
-		...state,
-		wallets,
-		operations: [...state.operations, decision.operation],
-		ledger: [...state.ledger, decision.ledgerEntry],
+		accepted: true,
+		effect: {
+			kind,
+			fromWalletId: from.id,
+			toWalletId: to.id,
+			amount,
+			metadata: metadata ?? null,
+			deltas,
+		},
 	};
-}
-
-/** Sum of all wallet balances; equals issued supply in every accepted state (§4). */
-export function totalSupply(state: CommunityState): number {
-	let total = 0;
-	for (const wallet of state.wallets.values()) {
-		total += wallet.balance;
-	}
-	return total;
-}
-
-/** Total amount ever introduced by TOKEN_ISSUANCE operations. */
-export function issuedAmount(state: CommunityState): number {
-	const issuanceIds = new Set(
-		state.operations
-			.filter((o) => o.kind === "TOKEN_ISSUANCE")
-			.map((o) => o.id),
-	);
-	return state.ledger.reduce(
-		(sum, entry) =>
-			issuanceIds.has(entry.operationId) ? sum + entry.amount : sum,
-		0,
-	);
 }

@@ -54,7 +54,7 @@ not vice versa.
 | --- | --- |
 | `id` | Opaque, unique identifier. |
 | `kind` | `user` or `system`. |
-| `balance` | Non-negative integer token balance. |
+| `balance` | WalletBalance — integer in `0 .. 2^53 - 1`. `0` is a valid state. |
 | `created_at` | Creation timestamp in epoch milliseconds. |
 
 Exactly one `system` wallet exists per deployment: the treasury. The treasury has no user owner.
@@ -112,12 +112,24 @@ Four kinds. No others exist until the feature that requires them is implemented.
 | `P2P_TRANSFER` | user | user | sender `-amount`, recipient `+amount` | unchanged |
 | `TREASURY_PAYMENT` | user | treasury | user `-amount`, treasury `+amount` | unchanged |
 
-**TokenAmount.** The valid range of `amount` — and of every wallet balance — is the positive
-integers `1` through `2^53 - 1` (`Number.MAX_SAFE_INTEGER`). This intentionally narrows the legacy
-PostgreSQL `BIGINT` domain: the production store returns SQL numbers through the JavaScript number
-type, whose 52-bit mantissa cannot represent large int64 values exactly. Bounding amounts to the
-safe range prevents silent precision loss at the storage boundary. The full signed 64-bit range is
-deliberately not preserved.
+**Monetary value domains.** Three bounded integer domains apply, all measured in the same token
+unit:
+
+| Domain | Range | Applies to |
+| --- | --- | --- |
+| `TokenAmount` | `1 .. 2^53 - 1` | every operation `amount` |
+| `WalletBalance` | `0 .. 2^53 - 1` | every wallet `balance`; `0` is a valid state |
+| `TotalSupply` | `0 .. 2^53 - 1` | total issued amount, equivalently the sum of all wallet balances |
+
+These intentionally narrow the legacy PostgreSQL `BIGINT` domain: the production store returns SQL
+numbers through the JavaScript number type, whose 52-bit mantissa cannot represent large int64
+values exactly. Bounding every monetary value to the safe range prevents silent precision loss at
+the storage boundary. The full signed 64-bit range is deliberately not preserved.
+
+**Overflow rejection.** An accepted operation must keep every resulting monetary value in range.
+If a credit — including `TOKEN_ISSUANCE`'s treasury credit — would push a wallet balance or the
+total supply above `2^53 - 1`, the operation is rejected before any state is touched, per
+**Rejection leaves no trace** in §4.
 
 Rules applying to every kind:
 
@@ -145,10 +157,9 @@ kernel-level tests.
   cross-community movement or reference.
 - **One wallet per user** — each user owns exactly one wallet, and exactly one system wallet (the
   treasury) exists per deployment.
-- **Token amounts are positive integers in range** — every amount satisfies the TokenAmount range
-  of §3.
-- **Non-negative balances** — no wallet balance may become negative. An operation that would
-  violate this is rejected.
+- **Token amounts are in range** — every amount is a valid TokenAmount (§3).
+- **Balances stay in range** — every wallet balance remains a valid WalletBalance (§3), with `0` a
+  legitimate state. A credit that would push a balance above the range is rejected.
 - **Direction discipline** — each operation kind admits exactly the wallet-kind direction defined
   in §3.
 - **Rejection leaves no trace** — a rejected operation produces no change to resulting economic
@@ -158,7 +169,9 @@ kernel-level tests.
 - **Issuance-only supply growth** — only `TOKEN_ISSUANCE` increases total supply. Every other kind
   preserves it exactly.
 - **Supply accounting** — in every state produced by accepted operations, total issued amount
-  equals the sum of all wallet balances (circulating user balances plus treasury balance).
+  equals the sum of all wallet balances (circulating user balances plus treasury balance), and the
+  total remains within the TotalSupply range of §3. An issuance that would push it out of range is
+  rejected.
 
 ### Persistence consistency guarantees (production architecture)
 
@@ -252,8 +265,9 @@ persistence consistency guarantees of §4:
 
 ### Pending Phase 1 evidence
 
-- Storage-independent contract tests that verify each economic invariant of §4 by name. They are
-  the compatibility contract for any storage backend.
+- Storage-independent contract tests that verify each economic invariant of §4 by name, including
+  the domain boundaries and overflow rejection of §3. They are the compatibility contract for any
+  storage backend.
 - The minimal runtime-independent kernel those tests run against.
 
 When the contract-test work lands, its entries move from pending to validated.

@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { TREASURY_SELECTOR, userSelector } from "../src/types";
-import { ADMIN, SYSTEM, userActor } from "./fixtures";
+import { TREASURY_SELECTOR, userId, userSelector } from "../src/types";
+import {
+	ADMIN,
+	asAdmin,
+	asUser,
+	OTHER_SERVICE,
+	SYSTEM,
+	userActor,
+} from "./fixtures";
 import { createInMemoryFixture } from "./in-memory";
 
 describe("getBalance", () => {
@@ -8,9 +15,9 @@ describe("getBalance", () => {
 		const { app, seedUser } = createInMemoryFixture();
 		seedUser("alice");
 		app.issueToken(ADMIN, { amount: 100 });
-		app.distributeToken(ADMIN, { toUserId: "alice", amount: 40 });
+		app.distributeToken(ADMIN, { toUserId: userId("alice"), amount: 40 });
 
-		const r = app.getBalance(userActor("alice"), userSelector("alice"));
+		const r = app.getBalance(userActor("alice"), userSelector(userId("alice")));
 
 		expect(r).toEqual({ ok: true, value: { balance: 40 } });
 	});
@@ -20,7 +27,7 @@ describe("getBalance", () => {
 		seedUser("alice");
 		seedUser("bob");
 
-		const r = app.getBalance(userActor("alice"), userSelector("bob"));
+		const r = app.getBalance(userActor("alice"), userSelector(userId("bob")));
 
 		expect(r).toMatchObject({ ok: false, error: { type: "forbidden" } });
 	});
@@ -32,12 +39,12 @@ describe("getBalance", () => {
 		const { app, seedUser } = createInMemoryFixture();
 		seedUser("alice");
 
-		const r = app.getBalance(actor, userSelector("alice"));
+		const r = app.getBalance(asUser(actor), userSelector(userId("alice")));
 
 		expect(r).toMatchObject({ ok: false, error: { type: "forbidden" } });
 	});
 
-	it("a service actor reads the treasury balance", () => {
+	it("the admin-api principal reads the treasury balance", () => {
 		const { app } = createInMemoryFixture();
 		app.issueToken(ADMIN, { amount: 250 });
 
@@ -48,6 +55,7 @@ describe("getBalance", () => {
 
 	it.each([
 		["user", () => userActor("alice")],
+		["non-admin service", () => OTHER_SERVICE],
 		["system", () => SYSTEM],
 	] as const)(
 		"a %s actor cannot read the treasury balance",
@@ -55,7 +63,7 @@ describe("getBalance", () => {
 			const { app } = createInMemoryFixture();
 			app.issueToken(ADMIN, { amount: 250 });
 
-			const r = app.getBalance(actor(), TREASURY_SELECTOR);
+			const r = app.getBalance(asAdmin(actor()), TREASURY_SELECTOR);
 
 			expect(r).toMatchObject({ ok: false, error: { type: "forbidden" } });
 		},
@@ -64,7 +72,7 @@ describe("getBalance", () => {
 	it("reports WALLET_NOT_FOUND for a user that owns no wallet", () => {
 		const { app } = createInMemoryFixture();
 
-		const r = app.getBalance(userActor("ghost"), userSelector("ghost"));
+		const r = app.getBalance(userActor("ghost"), userSelector(userId("ghost")));
 
 		expect(r).toMatchObject({
 			ok: false,

@@ -28,11 +28,20 @@ runtime when `work` returns a `PromiseLike`. The production adapter maps
 `transact` onto the CommunityState Durable Object's synchronous storage
 transaction; this package depends on no Cloudflare types.
 
+Every facade method opens its own section. The use-case operations are also
+exported directly and take an already-open `TransactionContext`, so outer
+orchestration owns the transaction and can extend the atomic unit — the §12
+idempotency record or the §16 Daily Reward claim row commits in the same
+section as the economic mutation it protects. Sections do not nest: composed
+operations share the one open context, and opening `transact` inside an open
+section is a contract violation.
+
 ## Ports
 
-- `Clock` — epoch-millisecond time authority. The production implementation
-  samples `Date.now()` once per serialized transaction and serves that frozen
-  value; tests inject fixed/stepping clocks (issue #4 §8).
+- `Clock` — epoch-millisecond time authority consumed by the `UnitOfWork`
+  implementation, which samples it once per serialized transaction and
+  freezes the value on the `TransactionContext` (issue #4 §8). Tests inject
+  fixed/stepping clocks.
 - `UnitOfWork` — the atomic boundary described above.
 - `TransactionScope` — the repositories valid inside a section:
   - `WalletRepository` — wallet lookup and absolute balance writes driven by
@@ -40,6 +49,8 @@ transaction; this package depends on no Cloudflare types.
   - `OperationRepository` — `EconomicOperation` append plus the operation+ledger
     history join (newest-first, opaque cursor).
   - `LedgerRepository` — append-only `LedgerTransaction` writes.
+- `TransactionContext` — a `TransactionScope` plus `nowMs()`, the section's
+  single frozen `now_ms` sampled lazily on first use.
 
 Record ids are allocated inside repository implementations — identifier
 allocation is a persistence-boundary concern (issue #4 §22), so no
@@ -55,26 +66,32 @@ evaluator.
 
 Use-case authorization:
 
-- `issueToken`, `distributeToken` — require `actor.kind === "service"`. Any
-  service principal is accepted at this layer; the `/admin/*` boundary binds
-  the concrete principal.
-- `transferToken`, `payTreasury` — require `actor.kind === "user"`; the source
-  wallet is the actor's own by construction. A user actor can never move
-  another user's funds, and `discord-adapter` can never appear as the actor of
-  a user-initiated operation.
-- `getBalance`, `getTransactionHistory` — self-only (issue #4 §17): user
-  selectors require the matching user actor, the treasury selector requires a
-  service actor.
+- `issueToken`, `distributeToken` — require `AdminActor`: the `admin-api`
+  service principal (issue #4 §10). A call with any other principal — such as
+  `discord-adapter` — is a compile error in typed code and a `forbidden`
+  result at runtime.
+- `transferToken`, `payTreasury` — require `UserActor`; the source wallet is
+  the actor's own by construction. A user actor can never move another user's
+  funds, and `discord-adapter` can never appear as the actor of a
+  user-initiated operation.
+- `getBalance`, `getTransactionHistory` — self-only (issue #4 §17): a user
+  selector requires the matching `UserActor`, the treasury selector requires
+  `AdminActor`. The overloads pair actor and selector so a mismatched call
+  does not type-check.
 
 ## History semantics
 
-Newest-first, opaque cursor pagination, default page size 50 capped at 100.
-`TOKEN_ISSUANCE` never appears in a user's history — its movement touches only
-the treasury wallet, so the wallet filter excludes it by construction. The
-treasury selector is the administrative view and does show issuances.
-`direction` is `"in"` iff the subject wallet is the movement destination (a
-self-transfer is `"in"`); `counterparty` is `"treasury"` for the system side
-or the other wallet's owning user id.
+Newest-first, opaque cursor pagination, default page size 50. A supplied
+`limit` must be an integer in `1..100`; out-of-contract values are an
+`invalid-input` failure, never clamped (issue #4 §17). `TOKEN_ISSUANCE`
+never appears in a user's history — its movement touches only the treasury
+wallet, so the wallet filter excludes it by construction. The treasury
+selector is the administrative view and does show issuances. `direction` is
+`"in"` when value arrives at the subject wallet, `"out"` when it leaves, and
+`"self"` for a net-zero self-movement (a `P2P_TRANSFER` whose sides are the
+same wallet); `counterparty` is `"treasury"` for the system side or the other
+wallet's owning user id — the user's own id for a self-transfer (issue #4
+§22).
 
 ## Deferred to later PRs (per the approved slicing)
 

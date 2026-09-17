@@ -1,14 +1,16 @@
-import { TREASURY_WALLET_ID } from "@communitytoken/economic-kernel";
 import { describe, expect, it } from "vitest";
-import { ADMIN, SYSTEM, userActor } from "./fixtures";
+import { userId } from "../src/types";
+import { TREASURY_ID } from "../src/use-cases/shared";
+import { ADMIN, asAdmin, OTHER_SERVICE, SYSTEM, userActor } from "./fixtures";
 import { createInMemoryFixture } from "./in-memory";
 
 function walletOf(
 	state: ReturnType<typeof createInMemoryFixture>["state"],
-	userId: string,
+	rawUserId: string,
 ) {
+	const owner = userId(rawUserId);
 	for (const wallet of state.wallets.values()) {
-		if (wallet.ownerUserId === userId) return wallet;
+		if (wallet.ownerUserId === owner) return wallet;
 	}
 	return undefined;
 }
@@ -19,13 +21,16 @@ describe("distributeToken", () => {
 		seedUser("alice");
 		app.issueToken(ADMIN, { amount: 200 });
 
-		const r = app.distributeToken(ADMIN, { toUserId: "alice", amount: 80 });
+		const r = app.distributeToken(ADMIN, {
+			toUserId: userId("alice"),
+			amount: 80,
+		});
 
 		expect(r).toEqual({
 			ok: true,
 			value: { operationId: expect.any(String) },
 		});
-		expect(state.wallets.get(TREASURY_WALLET_ID)?.balance).toBe(120);
+		expect(state.wallets.get(TREASURY_ID)?.balance).toBe(120);
 		expect(walletOf(state, "alice")?.balance).toBe(80);
 
 		const op = state.operationRows.at(-1)?.record;
@@ -33,7 +38,7 @@ describe("distributeToken", () => {
 		expect(op?.actorKind).toBe("service");
 		expect(op?.actorId).toBe("admin-api");
 		const entry = state.ledgerRows.at(-1)?.record;
-		expect(entry?.fromWalletId).toBe(TREASURY_WALLET_ID);
+		expect(entry?.fromWalletId).toBe(TREASURY_ID);
 		expect(entry?.toWalletId).toBe(walletOf(state, "alice")?.id);
 		expect(entry?.amount).toBe(80);
 	});
@@ -45,13 +50,16 @@ describe("distributeToken", () => {
 		const before = state.operationRows.length;
 		const ledgerBefore = state.ledgerRows.length;
 
-		const r = app.distributeToken(ADMIN, { toUserId: "alice", amount: 51 });
+		const r = app.distributeToken(ADMIN, {
+			toUserId: userId("alice"),
+			amount: 51,
+		});
 
 		expect(r).toMatchObject({
 			ok: false,
 			error: { type: "rejected", code: "INSUFFICIENT_BALANCE" },
 		});
-		expect(state.wallets.get(TREASURY_WALLET_ID)?.balance).toBe(50);
+		expect(state.wallets.get(TREASURY_ID)?.balance).toBe(50);
 		expect(walletOf(state, "alice")?.balance).toBe(0);
 		expect(state.operationRows).toHaveLength(before);
 		expect(state.ledgerRows).toHaveLength(ledgerBefore);
@@ -62,27 +70,33 @@ describe("distributeToken", () => {
 		app.issueToken(ADMIN, { amount: 50 });
 		const before = state.operationRows.length;
 
-		const r = app.distributeToken(ADMIN, { toUserId: "ghost", amount: 10 });
+		const r = app.distributeToken(ADMIN, {
+			toUserId: userId("ghost"),
+			amount: 10,
+		});
 
 		expect(r).toMatchObject({
 			ok: false,
 			error: { type: "rejected", code: "WALLET_NOT_FOUND" },
 		});
-		expect(state.wallets.get(TREASURY_WALLET_ID)?.balance).toBe(50);
+		expect(state.wallets.get(TREASURY_ID)?.balance).toBe(50);
 		expect(state.operationRows).toHaveLength(before);
 	});
 
-	it.each(["user", "system"] as const)(
-		"rejects a %s actor as forbidden",
-		(kind) => {
-			const { app, seedUser } = createInMemoryFixture();
-			seedUser("alice");
-			app.issueToken(ADMIN, { amount: 50 });
-			const actor = kind === "user" ? userActor("alice") : SYSTEM;
+	it.each([
+		["a non-admin service principal", OTHER_SERVICE],
+		["a user", userActor("alice")],
+		["system", SYSTEM],
+	] as const)("rejects %s as forbidden", (_label, actor) => {
+		const { app, seedUser } = createInMemoryFixture();
+		seedUser("alice");
+		app.issueToken(ADMIN, { amount: 50 });
 
-			const r = app.distributeToken(actor, { toUserId: "alice", amount: 10 });
+		const r = app.distributeToken(asAdmin(actor), {
+			toUserId: userId("alice"),
+			amount: 10,
+		});
 
-			expect(r).toMatchObject({ ok: false, error: { type: "forbidden" } });
-		},
-	);
+		expect(r).toMatchObject({ ok: false, error: { type: "forbidden" } });
+	});
 });

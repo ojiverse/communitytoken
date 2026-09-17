@@ -16,6 +16,7 @@ import type {
 	Actor,
 	HistoryRow,
 	LedgerRecord,
+	OperationId,
 	OperationKind,
 	OperationRecord,
 	Page,
@@ -46,13 +47,30 @@ export type Synchronous<R> = R extends PromiseLike<unknown> ? never : R;
 
 /**
  * The set of repositories valid inside one atomic section. Handles exist
- * only as the `transact` callback's parameter, so repository use outside the
+ * only as part of the `TransactionContext`, so repository use outside the
  * boundary is unrepresentable.
  */
 export type TransactionScope = {
 	readonly wallets: WalletRepository;
 	readonly operations: OperationRepository;
 	readonly ledger: LedgerRepository;
+};
+
+/**
+ * One open atomic section: the repositories plus the section's frozen clock.
+ * Use-case operations take this context so that outer orchestration can own
+ * the transaction and extend the atomic unit — an idempotency check and its
+ * recorded result, or a Daily Reward claim row, commit in the same section
+ * as the economic mutation (issue #4 §3, §12, §16).
+ */
+export type TransactionContext = TransactionScope & {
+	/**
+	 * The single frozen `now_ms` of this section (issue #4 §8): sampled from
+	 * the section's `Clock` lazily on first call, then identical for every
+	 * call inside the same section. A section that performs no timestamped
+	 * write never samples the clock at all.
+	 */
+	readonly nowMs: () => number;
 };
 
 /**
@@ -64,14 +82,19 @@ export type TransactionScope = {
 export interface UnitOfWork {
 	/**
 	 * Runs `work` inside one serialized atomic section and returns its
-	 * result. When the section does not commit, no repository write made
-	 * inside it is persisted; a rejected use case persists nothing at all.
-	 * `work` must be synchronous — `Synchronous<R>` rejects promise-returning
-	 * functions at compile time.
-	 * @throws {Error} when `work` returns a PromiseLike (the type guard can be
-	 *   escaped through `any`; implementations must check at runtime too).
+	 * result. `work` receives the open `TransactionContext`: repository
+	 * handles valid only for this section and the section's frozen clock.
+	 * When the section does not commit — `work` throws or returns a
+	 * PromiseLike — no repository write made inside it is persisted; a
+	 * rejected use case persists nothing at all. `work` must be
+	 * synchronous — `Synchronous<R>` rejects promise-returning functions at
+	 * compile time.
+	 * @throws {Error} when `work` returns a PromiseLike (the type guard can
+	 *   be escaped through `any`; implementations must check at runtime too).
+	 * @throws {Error} when a section is opened inside an already-open
+	 *   section — sections compose by sharing one context, never by nesting.
 	 */
-	transact<R>(work: (tx: TransactionScope) => Synchronous<R>): R;
+	transact<R>(work: (ctx: TransactionContext) => Synchronous<R>): R;
 }
 
 /**
@@ -127,7 +150,8 @@ export interface OperationRepository {
 	 * first. `cursor` is the opaque continuation value from a previous call;
 	 * pass `null` for the first page. The implementation owns the cursor
 	 * encoding (production encodes the storage rowid per issue #4 §22).
-	 * `nextCursor` is `null` when the result is exhausted.
+	 * `nextCursor` is `null` when the result is exhausted. `limit` is a
+	 * positive page size already validated by the caller.
 	 */
 	listForWallet(
 		walletId: WalletId,
@@ -138,7 +162,7 @@ export interface OperationRepository {
 
 /** The fields of a LedgerTransaction the caller supplies; `id` is allocated by the repository. */
 export type NewLedgerEntry = {
-	readonly operationId: string;
+	readonly operationId: OperationId;
 	readonly fromWalletId: WalletId;
 	readonly toWalletId: WalletId;
 	readonly amount: number;

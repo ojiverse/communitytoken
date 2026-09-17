@@ -6,12 +6,16 @@
  * economic decision boundary remains `@communitytoken/economic-kernel`.
  */
 
-import type { Clock, UnitOfWork } from "./ports";
+import type { UnitOfWork } from "./ports";
 import type {
 	Actor,
+	AdminActor,
 	HistoryEntry,
 	Page,
+	TreasuryWalletSelector,
 	UseCaseResult,
+	UserActor,
+	UserWalletSelector,
 	WalletSelector,
 } from "./types";
 import {
@@ -36,96 +40,144 @@ import {
 	transferToken,
 } from "./use-cases/transfer-token";
 
-/** The dependencies every use case requires: the atomic boundary and the clock authority. */
+/**
+ * The dependencies every use case requires: the atomic boundary. The
+ * section's `TransactionContext` supplies repositories and the frozen
+ * `now_ms`; the injected `UnitOfWork` implementation owns the clock source.
+ */
 export type ApplicationDeps = {
 	readonly uow: UnitOfWork;
-	readonly clock: Clock;
 };
 
 /**
  * The runtime-independent application contract invoked by trusted surfaces
  * (the `/internal/*` and `/admin/*` boundaries of issue #4 §11). Every
- * method runs its work inside `deps.uow.transact`, so the caller's
- * implementation decides the serialization/atomicity mechanism. Results
- * carry expected failures (forbidden actor, kernel rejection) as values;
- * contract violations and storage faults are thrown.
+ * method runs its operation inside `deps.uow.transact`. Callers that must
+ * extend the atomic unit — the idempotency record of §12, the Daily Reward
+ * claim row of §16 — instead open the section themselves and invoke the
+ * exported use-case operations against the shared `TransactionContext`;
+ * this facade is the convenience path for a single operation. Results
+ * carry expected failures (forbidden actor, invalid input, kernel
+ * rejection) as values; contract violations and storage faults are thrown.
  */
 export interface CommunityTokenApplication {
 	/**
 	 * Explicit `TOKEN_ISSUANCE` into the treasury (administrative boundary).
-	 * @param actor must have `kind === "service"`.
+	 * @param actor the `admin-api` service principal.
 	 */
 	issueToken(
-		actor: Actor,
+		actor: AdminActor,
 		input: IssueTokenInput,
 	): UseCaseResult<OperationAccepted>;
 
 	/**
 	 * `DISTRIBUTION` of existing treasury reserve to a user; never issues
 	 * implicitly — insufficient treasury rejects (administrative boundary).
-	 * @param actor must have `kind === "service"`.
+	 * @param actor the `admin-api` service principal.
 	 */
 	distributeToken(
-		actor: Actor,
+		actor: AdminActor,
 		input: DistributeTokenInput,
 	): UseCaseResult<OperationAccepted>;
 
 	/**
 	 * `P2P_TRANSFER` from the actor's own wallet to another user. A
 	 * self-transfer is valid and recorded net-zero.
-	 * @param actor must have `kind === "user"`; it is the sender.
+	 * @param actor the sending user; only `UserActor` is accepted.
 	 */
 	transferToken(
-		actor: Actor,
+		actor: UserActor,
 		input: TransferTokenInput,
 	): UseCaseResult<TransferTokenResult>;
 
 	/**
 	 * `TREASURY_PAYMENT` from the actor's own wallet to the treasury.
-	 * @param actor must have `kind === "user"`; it is the payer.
+	 * @param actor the paying user; only `UserActor` is accepted.
 	 */
 	payTreasury(
-		actor: Actor,
+		actor: UserActor,
 		input: PayTreasuryInput,
 	): UseCaseResult<PayTreasuryResult>;
 
 	/**
-	 * Balance of the selected wallet under self-only visibility (issue #4
-	 * §17): user selectors require the matching user actor, the treasury
-	 * selector requires a service actor.
+	 * Balance of a user wallet under self-only visibility (issue #4 §17):
+	 * the selector must name the acting user's own wallet.
+	 * @param actor the wallet owner; only `UserActor` is accepted.
 	 */
 	getBalance(
-		actor: Actor,
-		selector: WalletSelector,
+		actor: UserActor,
+		selector: UserWalletSelector,
 	): UseCaseResult<BalanceResult>;
 
 	/**
-	 * Newest-first cursor-paginated history of the selected wallet under the
-	 * same visibility rule as `getBalance`. Page size defaults to 50 and is
-	 * capped at 100 (issue #4 §17).
+	 * Treasury balance — administrative treasury inspection (issue #4 §10,
+	 * §17).
+	 * @param actor the `admin-api` service principal.
+	 */
+	getBalance(
+		actor: AdminActor,
+		selector: TreasuryWalletSelector,
+	): UseCaseResult<BalanceResult>;
+
+	/**
+	 * Newest-first cursor-paginated history of a user wallet under the same
+	 * visibility rule as `getBalance`. `request.limit` must be an integer
+	 * in `1..100` (default 50); out-of-contract values are an
+	 * `invalid-input` failure (issue #4 §17).
+	 * @param actor the wallet owner; only `UserActor` is accepted.
 	 */
 	getTransactionHistory(
-		actor: Actor,
-		selector: WalletSelector,
+		actor: UserActor,
+		selector: UserWalletSelector,
+		request: HistoryRequest,
+	): UseCaseResult<Page<HistoryEntry>>;
+
+	/**
+	 * Newest-first cursor-paginated treasury history — administrative
+	 * treasury inspection (issue #4 §10, §17).
+	 * @param actor the `admin-api` service principal.
+	 */
+	getTransactionHistory(
+		actor: AdminActor,
+		selector: TreasuryWalletSelector,
 		request: HistoryRequest,
 	): UseCaseResult<Page<HistoryEntry>>;
 }
 
 /**
  * Binds the application contract to its environment. The same instance may
- * serve any number of calls; per-request concerns (one `now_ms` sample per
- * serialized mutation) belong to the injected port implementations.
+ * serve any number of calls; per-section concerns (one frozen `now_ms` per
+ * serialized transaction, atomic commit) belong to the injected `UnitOfWork`.
  */
 export function createCommunityTokenApplication(
 	deps: ApplicationDeps,
 ): CommunityTokenApplication {
 	return {
-		issueToken: (actor, input) => issueToken(deps, actor, input),
-		distributeToken: (actor, input) => distributeToken(deps, actor, input),
-		transferToken: (actor, input) => transferToken(deps, actor, input),
-		payTreasury: (actor, input) => payTreasury(deps, actor, input),
-		getBalance: (actor, selector) => getBalance(deps, actor, selector),
-		getTransactionHistory: (actor, selector, request) =>
-			getTransactionHistory(deps, actor, selector, request),
+		issueToken: (actor, input) =>
+			deps.uow.transact((ctx) => issueToken(ctx, actor, input)),
+		distributeToken: (actor, input) =>
+			deps.uow.transact((ctx) => distributeToken(ctx, actor, input)),
+		transferToken: (actor, input) =>
+			deps.uow.transact((ctx) => transferToken(ctx, actor, input)),
+		payTreasury: (actor, input) =>
+			deps.uow.transact((ctx) => payTreasury(ctx, actor, input)),
+		getBalance: (actor: Actor, selector: WalletSelector) =>
+			deps.uow.transact((ctx) =>
+				// The overloads pin actor to selector for typed callers; the
+				// use-case guards re-check the actor at runtime.
+				selector.type === "treasury"
+					? getBalance(ctx, actor as AdminActor, selector)
+					: getBalance(ctx, actor as UserActor, selector),
+			),
+		getTransactionHistory: (
+			actor: Actor,
+			selector: WalletSelector,
+			request: HistoryRequest,
+		) =>
+			deps.uow.transact((ctx) =>
+				selector.type === "treasury"
+					? getTransactionHistory(ctx, actor as AdminActor, selector, request)
+					: getTransactionHistory(ctx, actor as UserActor, selector, request),
+			),
 	};
 }

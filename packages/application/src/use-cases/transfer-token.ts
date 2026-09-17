@@ -1,5 +1,5 @@
-import type { ApplicationDeps } from "../application";
-import type { Actor, UseCaseResult, UserId } from "../types";
+import type { TransactionContext } from "../ports";
+import type { UseCaseResult, UserActor, UserId } from "../types";
 import {
 	economicFacts,
 	evaluateAndPersist,
@@ -24,38 +24,39 @@ export type TransferTokenResult = OperationAccepted & {
  * wallet by construction: a user actor can only move their own funds, and a
  * self-transfer is a valid net-zero movement that is still recorded
  * (issue #4 §22, economic-model §3).
+ *
+ * Runs inside the caller's already-open section so outer orchestration can
+ * extend the atomic unit around it — for example the idempotency record of
+ * issue #4 §12 commits in the same section as the transfer.
  */
 export function transferToken(
-	deps: ApplicationDeps,
-	actor: Actor,
+	ctx: TransactionContext,
+	actor: UserActor,
 	input: TransferTokenInput,
 ): UseCaseResult<TransferTokenResult> {
 	const user = requireUser(actor, "transferToken");
 	if (!("userId" in user)) return user;
-	return deps.uow.transact((tx) => {
-		const from = tx.wallets.findByOwnerUserId(user.userId);
-		const to = tx.wallets.findByOwnerUserId(input.toUserId);
-		const result = evaluateAndPersist(
-			tx,
-			deps.clock,
-			actor,
-			economicFacts(from, to, tx.wallets.totalSupply()),
-			{
-				kind: "P2P_TRANSFER",
-				fromWalletId: from?.id ?? missingWalletId(user.userId),
-				toWalletId: to?.id ?? missingWalletId(input.toUserId),
-				amount: input.amount,
-				...(input.metadata === undefined ? {} : { metadata: input.metadata }),
-			},
-		);
-		if (!result.ok) return result;
-		const post = tx.wallets.findById(from?.id ?? missingWalletId(user.userId));
-		return {
-			ok: true,
-			value: {
-				operationId: result.value.operationId,
-				fromBalance: post?.balance ?? 0,
-			},
-		};
-	});
+	const from = ctx.wallets.findByOwnerUserId(user.userId);
+	const to = ctx.wallets.findByOwnerUserId(input.toUserId);
+	const result = evaluateAndPersist(
+		ctx,
+		actor,
+		economicFacts(from, to, ctx.wallets.totalSupply()),
+		{
+			kind: "P2P_TRANSFER",
+			fromWalletId: from?.id ?? missingWalletId(user.userId),
+			toWalletId: to?.id ?? missingWalletId(input.toUserId),
+			amount: input.amount,
+			...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+		},
+	);
+	if (!result.ok) return result;
+	const post = ctx.wallets.findById(from?.id ?? missingWalletId(user.userId));
+	return {
+		ok: true,
+		value: {
+			operationId: result.value.operationId,
+			fromBalance: post?.balance ?? 0,
+		},
+	};
 }

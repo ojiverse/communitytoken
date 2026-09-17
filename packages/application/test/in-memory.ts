@@ -3,10 +3,10 @@
  * they make the contract executable without a runtime while keeping the
  * same boundary discipline the production adapters must honor —
  * repositories exist only inside `transact`, ids are allocated by the
- * repository, and promise-returning work is rejected.
+ * repository, promise-returning work is rejected, and a section commits
+ * all-or-nothing.
  */
 
-import { TREASURY_WALLET_ID } from "@communitytoken/economic-kernel";
 import {
 	type CommunityTokenApplication,
 	createCommunityTokenApplication,
@@ -16,6 +16,7 @@ import type {
 	LedgerRepository,
 	OperationRepository,
 	Synchronous,
+	TransactionContext,
 	TransactionScope,
 	UnitOfWork,
 	WalletRepository,
@@ -25,12 +26,16 @@ import {
 	actorKind,
 	type HistoryRow,
 	type LedgerRecord,
+	ledgerId,
 	type OperationRecord,
+	operationId,
 	type Page,
-	type UserId,
+	userId,
 	type Wallet,
 	type WalletId,
+	walletId,
 } from "../src/types";
+import { TREASURY_ID } from "../src/use-cases/shared";
 
 type StoredOperation = {
 	readonly rowid: number;
@@ -40,9 +45,9 @@ type StoredLedger = { readonly rowid: number; readonly record: LedgerRecord };
 
 /** The mutable state behind an in-memory `UnitOfWork`. */
 export type InMemoryState = {
-	readonly wallets: Map<WalletId, Wallet>;
-	readonly operationRows: StoredOperation[];
-	readonly ledgerRows: StoredLedger[];
+	wallets: Map<WalletId, Wallet>;
+	operationRows: StoredOperation[];
+	ledgerRows: StoredLedger[];
 	nextId: number;
 	nextRowid: number;
 };
@@ -56,8 +61,8 @@ export function createInMemoryState(): InMemoryState {
 		nextId: 0,
 		nextRowid: 0,
 	};
-	state.wallets.set(TREASURY_WALLET_ID, {
-		id: TREASURY_WALLET_ID,
+	state.wallets.set(TREASURY_ID, {
+		id: TREASURY_ID,
 		kind: "system",
 		ownerUserId: null,
 		balance: 0,
@@ -72,9 +77,9 @@ function walletRepository(state: InMemoryState): WalletRepository {
 		findById(id) {
 			return state.wallets.get(id);
 		},
-		findByOwnerUserId(userId) {
+		findByOwnerUserId(owner) {
 			for (const wallet of state.wallets.values()) {
-				if (wallet.kind === "user" && wallet.ownerUserId === userId) {
+				if (wallet.kind === "user" && wallet.ownerUserId === owner) {
 					return wallet;
 				}
 			}
@@ -99,7 +104,7 @@ function operationRepository(state: InMemoryState): OperationRepository {
 	return {
 		insert(record) {
 			const stored: OperationRecord = {
-				id: `op-${++state.nextId}`,
+				id: operationId(`op-${++state.nextId}`),
 				kind: record.kind,
 				metadata: record.metadata,
 				actorKind: actorKind(record.actor),
@@ -109,11 +114,11 @@ function operationRepository(state: InMemoryState): OperationRepository {
 			state.operationRows.push({ rowid: ++state.nextRowid, record: stored });
 			return stored;
 		},
-		listForWallet(walletId, cursor, limit) {
+		listForWallet(id, cursor, limit) {
 			type JoinedRow = HistoryRow & { readonly rowid: number };
 			const joined: JoinedRow[] = [];
 			for (const { rowid, record: entry } of state.ledgerRows) {
-				if (entry.fromWalletId !== walletId && entry.toWalletId !== walletId) {
+				if (entry.fromWalletId !== id && entry.toWalletId !== id) {
 					continue;
 				}
 				const operation = state.operationRows.find(
@@ -162,7 +167,7 @@ function ledgerRepository(state: InMemoryState): LedgerRepository {
 	return {
 		insert(entry) {
 			const stored: LedgerRecord = {
-				id: `tx-${++state.nextId}`,
+				id: ledgerId(`tx-${++state.nextId}`),
 				operationId: entry.operationId,
 				fromWalletId: entry.fromWalletId,
 				toWalletId: entry.toWalletId,
@@ -175,31 +180,98 @@ function ledgerRepository(state: InMemoryState): LedgerRepository {
 	};
 }
 
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"then" in value &&
+		typeof (value as { then: unknown }).then === "function"
+	);
+}
+
 /**
- * An in-memory `UnitOfWork`: `work` runs immediately against shared state.
- * The section still enforces the boundary invariant — promise-returning
- * work is rejected at runtime, mirroring what production adapters must do.
+ * Copies the stores a section can write. Records are immutable values, so
+ * copying the containers is a faithful snapshot: a write inside the section
+ * replaces a map entry or appends a row, never mutates a shared record.
  */
-export function createInMemoryUnitOfWork(state: InMemoryState): UnitOfWork {
-	const scope: TransactionScope = {
-		wallets: walletRepository(state),
-		operations: operationRepository(state),
-		ledger: ledgerRepository(state),
-	};
+function cloneState(state: InMemoryState): InMemoryState {
 	return {
-		transact<R>(work: (tx: TransactionScope) => Synchronous<R>): R {
-			const result = work(scope);
-			if (
-				typeof result === "object" &&
-				result !== null &&
-				"then" in result &&
-				typeof result.then === "function"
-			) {
+		wallets: new Map(state.wallets),
+		operationRows: [...state.operationRows],
+		ledgerRows: [...state.ledgerRows],
+		nextId: state.nextId,
+		nextRowid: state.nextRowid,
+	};
+}
+
+function commitState(target: InMemoryState, staging: InMemoryState): void {
+	target.wallets = staging.wallets;
+	target.operationRows = staging.operationRows;
+	target.ledgerRows = staging.ledgerRows;
+	target.nextId = staging.nextId;
+	target.nextRowid = staging.nextRowid;
+}
+
+export type InMemoryUnitOfWorkOptions = {
+	/**
+	 * Fault-injection seam: transforms the section's repository scope before
+	 * `work` runs — for example wrapping `operations.insert` to throw
+	 * mid-section. Applied to every section this `UnitOfWork` opens.
+	 */
+	readonly wrapScope?:
+		| ((scope: TransactionScope) => TransactionScope)
+		| undefined;
+};
+
+/**
+ * An in-memory `UnitOfWork` faithful to the atomic boundary it models:
+ * `work` runs against a staging copy of the state, and the staging copy
+ * replaces the committed state only when `work` returns a non-Promise
+ * result. A throw — including the runtime PromiseLike check — discards the
+ * staging copy, so no observable state change survives an aborted section.
+ * Sections do not nest: composing work shares the open `TransactionContext`.
+ */
+export function createInMemoryUnitOfWork(
+	state: InMemoryState,
+	clock: Clock,
+	options?: InMemoryUnitOfWorkOptions,
+): UnitOfWork {
+	let active = false;
+	return {
+		transact<R>(work: (ctx: TransactionContext) => Synchronous<R>): R {
+			if (active) {
 				throw new Error(
-					"atomic section must be synchronous: work returned a PromiseLike",
+					"nested transact sections are not supported: share the open TransactionContext",
 				);
 			}
-			return result;
+			active = true;
+			try {
+				const staging = cloneState(state);
+				const scope: TransactionScope = {
+					wallets: walletRepository(staging),
+					operations: operationRepository(staging),
+					ledger: ledgerRepository(staging),
+				};
+				const wrapped = options?.wrapScope?.(scope) ?? scope;
+				let sampled: number | undefined;
+				const ctx: TransactionContext = {
+					...wrapped,
+					nowMs() {
+						if (sampled === undefined) sampled = clock.nowMs();
+						return sampled;
+					},
+				};
+				const result = work(ctx);
+				if (isPromiseLike(result)) {
+					throw new Error(
+						"atomic section must be synchronous: work returned a PromiseLike",
+					);
+				}
+				commitState(state, staging);
+				return result;
+			} finally {
+				active = false;
+			}
 		},
 	};
 }
@@ -239,28 +311,33 @@ export function fixedClock(nowMs: number): Clock {
  * concern and is owned by a later PR), and `state` exposes the raw stores
  * for assertions.
  */
-export function createInMemoryFixture(options?: { readonly clock?: Clock }): {
+export function createInMemoryFixture(options?: {
+	readonly clock?: Clock;
+	readonly wrapScope?: (scope: TransactionScope) => TransactionScope;
+}): {
 	readonly app: CommunityTokenApplication;
 	readonly state: InMemoryState;
 	readonly clock: Clock;
-	seedUser(userId: UserId): Wallet;
+	readonly uow: UnitOfWork;
+	seedUser(rawUserId: string): Wallet;
 } {
 	const state = createInMemoryState();
 	const clock = options?.clock ?? stepClock();
-	const app = createCommunityTokenApplication({
-		uow: createInMemoryUnitOfWork(state),
-		clock,
+	const uow = createInMemoryUnitOfWork(state, clock, {
+		wrapScope: options?.wrapScope,
 	});
-	function seedUser(userId: UserId): Wallet {
+	const app = createCommunityTokenApplication({ uow });
+	function seedUser(rawUserId: string): Wallet {
+		const owner = userId(rawUserId);
 		for (const wallet of state.wallets.values()) {
-			if (wallet.ownerUserId === userId) {
-				throw new Error(`user already seeded: ${userId}`);
+			if (wallet.ownerUserId === owner) {
+				throw new Error(`user already seeded: ${rawUserId}`);
 			}
 		}
 		const wallet: Wallet = {
-			id: `wallet-${++state.nextId}`,
+			id: walletId(`wallet-${++state.nextId}`),
 			kind: "user",
-			ownerUserId: userId,
+			ownerUserId: owner,
 			balance: 0,
 			createdAt: 0,
 			updatedAt: 0,
@@ -268,5 +345,5 @@ export function createInMemoryFixture(options?: { readonly clock?: Clock }): {
 		state.wallets.set(wallet.id, wallet);
 		return wallet;
 	}
-	return { app, state, clock, seedUser };
+	return { app, state, clock, uow, seedUser };
 }

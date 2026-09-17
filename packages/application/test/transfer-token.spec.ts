@@ -1,25 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { ADMIN, SYSTEM, userActor } from "./fixtures";
+import { userId } from "../src/types";
+import { ADMIN, asUser, SYSTEM, userActor } from "./fixtures";
 import { createInMemoryFixture } from "./in-memory";
 
 function walletOf(
 	state: ReturnType<typeof createInMemoryFixture>["state"],
-	userId: string,
+	rawUserId: string,
 ) {
+	const owner = userId(rawUserId);
 	for (const wallet of state.wallets.values()) {
-		if (wallet.ownerUserId === userId) return wallet;
+		if (wallet.ownerUserId === owner) return wallet;
 	}
 	return undefined;
 }
 
 function funded(
-	userId: string,
+	rawUserId: string,
 	amount: number,
 ): ReturnType<typeof createInMemoryFixture> {
 	const fx = createInMemoryFixture();
-	fx.seedUser(userId);
+	fx.seedUser(rawUserId);
 	fx.app.issueToken(ADMIN, { amount });
-	fx.app.distributeToken(ADMIN, { toUserId: userId, amount });
+	fx.app.distributeToken(ADMIN, { toUserId: userId(rawUserId), amount });
 	return fx;
 }
 
@@ -30,7 +32,7 @@ describe("transferToken", () => {
 		const before = fx.state.operationRows.length;
 
 		const r = fx.app.transferToken(userActor("alice"), {
-			toUserId: "bob",
+			toUserId: userId("bob"),
 			amount: 30,
 		});
 
@@ -57,7 +59,10 @@ describe("transferToken", () => {
 		fx.seedUser("bob");
 		const supply = fx.state.wallets.values().reduce((s, w) => s + w.balance, 0);
 
-		fx.app.transferToken(userActor("alice"), { toUserId: "bob", amount: 30 });
+		fx.app.transferToken(userActor("alice"), {
+			toUserId: userId("bob"),
+			amount: 30,
+		});
 
 		expect(fx.state.wallets.values().reduce((s, w) => s + w.balance, 0)).toBe(
 			supply,
@@ -70,7 +75,7 @@ describe("transferToken", () => {
 		const ledgerBefore = fx.state.ledgerRows.length;
 
 		const r = fx.app.transferToken(userActor("alice"), {
-			toUserId: "alice",
+			toUserId: userId("alice"),
 			amount: 30,
 		});
 
@@ -90,7 +95,7 @@ describe("transferToken", () => {
 		const ledgerBefore = fx.state.ledgerRows.length;
 
 		const r = fx.app.transferToken(userActor("alice"), {
-			toUserId: "bob",
+			toUserId: userId("bob"),
 			amount: 20,
 		});
 
@@ -108,7 +113,7 @@ describe("transferToken", () => {
 		const fx = funded("alice", 10);
 
 		const r = fx.app.transferToken(userActor("alice"), {
-			toUserId: "ghost",
+			toUserId: userId("ghost"),
 			amount: 1,
 		});
 
@@ -122,7 +127,7 @@ describe("transferToken", () => {
 		const { app } = createInMemoryFixture();
 
 		const r = app.transferToken(userActor("ghost"), {
-			toUserId: "anyone",
+			toUserId: userId("anyone"),
 			amount: 1,
 		});
 
@@ -140,7 +145,10 @@ describe("transferToken", () => {
 		fx.seedUser("bob");
 		const opsBefore = fx.state.operationRows.length;
 
-		const r = fx.app.transferToken(actor, { toUserId: "bob", amount: 1 });
+		const r = fx.app.transferToken(asUser(actor), {
+			toUserId: userId("bob"),
+			amount: 1,
+		});
 
 		expect(r).toMatchObject({ ok: false, error: { type: "forbidden" } });
 		expect(fx.state.operationRows.length).toBe(opsBefore);

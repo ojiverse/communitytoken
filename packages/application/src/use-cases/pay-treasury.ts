@@ -1,12 +1,12 @@
-import { TREASURY_WALLET_ID } from "@communitytoken/economic-kernel";
-import type { ApplicationDeps } from "../application";
-import type { Actor, UseCaseResult } from "../types";
+import type { TransactionContext } from "../ports";
+import type { UseCaseResult, UserActor } from "../types";
 import {
 	economicFacts,
 	evaluateAndPersist,
 	missingWalletId,
 	type OperationAccepted,
 	requireUser,
+	TREASURY_ID,
 } from "./shared";
 
 export type PayTreasuryInput = {
@@ -22,38 +22,38 @@ export type PayTreasuryResult = OperationAccepted & {
 /**
  * `TREASURY_PAYMENT`: value returning from a user to the treasury (issue #4
  * §4). The source is the actor's own wallet by construction.
+ *
+ * Runs inside the caller's already-open section so outer orchestration can
+ * extend the atomic unit around it.
  */
 export function payTreasury(
-	deps: ApplicationDeps,
-	actor: Actor,
+	ctx: TransactionContext,
+	actor: UserActor,
 	input: PayTreasuryInput,
 ): UseCaseResult<PayTreasuryResult> {
 	const user = requireUser(actor, "payTreasury");
 	if (!("userId" in user)) return user;
-	return deps.uow.transact((tx) => {
-		const from = tx.wallets.findByOwnerUserId(user.userId);
-		const treasury = tx.wallets.findById(TREASURY_WALLET_ID);
-		const result = evaluateAndPersist(
-			tx,
-			deps.clock,
-			actor,
-			economicFacts(from, treasury, tx.wallets.totalSupply()),
-			{
-				kind: "TREASURY_PAYMENT",
-				fromWalletId: from?.id ?? missingWalletId(user.userId),
-				toWalletId: TREASURY_WALLET_ID,
-				amount: input.amount,
-				...(input.metadata === undefined ? {} : { metadata: input.metadata }),
-			},
-		);
-		if (!result.ok) return result;
-		const post = tx.wallets.findById(from?.id ?? missingWalletId(user.userId));
-		return {
-			ok: true,
-			value: {
-				operationId: result.value.operationId,
-				fromBalance: post?.balance ?? 0,
-			},
-		};
-	});
+	const from = ctx.wallets.findByOwnerUserId(user.userId);
+	const treasury = ctx.wallets.findById(TREASURY_ID);
+	const result = evaluateAndPersist(
+		ctx,
+		actor,
+		economicFacts(from, treasury, ctx.wallets.totalSupply()),
+		{
+			kind: "TREASURY_PAYMENT",
+			fromWalletId: from?.id ?? missingWalletId(user.userId),
+			toWalletId: TREASURY_ID,
+			amount: input.amount,
+			...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+		},
+	);
+	if (!result.ok) return result;
+	const post = ctx.wallets.findById(from?.id ?? missingWalletId(user.userId));
+	return {
+		ok: true,
+		value: {
+			operationId: result.value.operationId,
+			fromBalance: post?.balance ?? 0,
+		},
+	};
 }

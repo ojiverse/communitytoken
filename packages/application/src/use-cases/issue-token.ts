@@ -1,11 +1,11 @@
-import { TREASURY_WALLET_ID } from "@communitytoken/economic-kernel";
-import type { ApplicationDeps } from "../application";
-import type { Actor, UseCaseResult } from "../types";
+import type { TransactionContext } from "../ports";
+import type { AdminActor, UseCaseResult } from "../types";
 import {
 	economicFacts,
 	evaluateAndPersist,
 	type OperationAccepted,
-	requireService,
+	requireAdmin,
+	TREASURY_ID,
 } from "./shared";
 
 export type IssueTokenInput = {
@@ -16,30 +16,31 @@ export type IssueTokenInput = {
 /**
  * Explicit `TOKEN_ISSUANCE`: increases total supply by crediting the
  * treasury (issue #4 §4 — issuance is always explicit and auditable).
- * Restricted to service actors; the `/admin/*` boundary binds the concrete
- * principal.
+ * Restricted to the `admin-api` principal; the `AdminActor` parameter type
+ * makes a call with any other actor inexpressible in typed code, and the
+ * runtime guard backstops untyped callers.
+ *
+ * Runs inside the caller's already-open section so outer orchestration can
+ * extend the atomic unit around it.
  */
 export function issueToken(
-	deps: ApplicationDeps,
-	actor: Actor,
+	ctx: TransactionContext,
+	actor: AdminActor,
 	input: IssueTokenInput,
 ): UseCaseResult<OperationAccepted> {
-	const denial = requireService(actor, "issueToken");
+	const denial = requireAdmin(actor, "issueToken");
 	if (denial) return denial;
-	return deps.uow.transact((tx) => {
-		const treasury = tx.wallets.findById(TREASURY_WALLET_ID);
-		return evaluateAndPersist(
-			tx,
-			deps.clock,
-			actor,
-			economicFacts(treasury, treasury, tx.wallets.totalSupply()),
-			{
-				kind: "TOKEN_ISSUANCE",
-				fromWalletId: TREASURY_WALLET_ID,
-				toWalletId: TREASURY_WALLET_ID,
-				amount: input.amount,
-				...(input.metadata === undefined ? {} : { metadata: input.metadata }),
-			},
-		);
-	});
+	const treasury = ctx.wallets.findById(TREASURY_ID);
+	return evaluateAndPersist(
+		ctx,
+		actor,
+		economicFacts(treasury, treasury, ctx.wallets.totalSupply()),
+		{
+			kind: "TOKEN_ISSUANCE",
+			fromWalletId: TREASURY_ID,
+			toWalletId: TREASURY_ID,
+			amount: input.amount,
+			...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+		},
+	);
 }

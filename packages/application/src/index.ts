@@ -10,6 +10,7 @@ export type {
 	NewOperation,
 	OperationRepository,
 	Synchronous,
+	TransactionContext,
 	TransactionScope,
 	UnitOfWork,
 	WalletRepository,
@@ -17,40 +18,67 @@ export type {
 export type {
 	Actor,
 	ActorKind,
+	AdminActor,
+	Brand,
 	ForbiddenError,
 	HistoryDirection,
 	HistoryEntry,
 	HistoryRow,
+	InvalidInputError,
+	LedgerId,
 	LedgerRecord,
+	OperationId,
 	OperationKind,
 	OperationRecord,
 	Page,
 	RejectedError,
 	RejectionCode,
+	ServiceActor,
+	SystemActor,
+	SystemWallet,
+	TreasuryWalletSelector,
 	UseCaseError,
 	UseCaseResult,
+	UserActor,
 	UserId,
+	UserWallet,
+	UserWalletSelector,
 	Wallet,
 	WalletId,
 	WalletKind,
 	WalletSelector,
 } from "./types";
 export {
+	ADMIN_API_PRINCIPAL,
 	actorId,
 	actorKind,
+	err,
+	ledgerId,
+	ok,
+	operationId,
 	TREASURY_SELECTOR,
+	userId,
 	userSelector,
+	walletId,
 } from "./types";
-export type { DistributeTokenInput } from "./use-cases/distribute-token";
-export type { BalanceResult } from "./use-cases/get-balance";
-export type { HistoryRequest } from "./use-cases/get-transaction-history";
-export type { IssueTokenInput } from "./use-cases/issue-token";
-export type {
-	PayTreasuryInput,
-	PayTreasuryResult,
+export {
+	type DistributeTokenInput,
+	distributeToken,
+} from "./use-cases/distribute-token";
+export { type BalanceResult, getBalance } from "./use-cases/get-balance";
+export {
+	getTransactionHistory,
+	type HistoryRequest,
+} from "./use-cases/get-transaction-history";
+export { type IssueTokenInput, issueToken } from "./use-cases/issue-token";
+export {
+	type PayTreasuryInput,
+	type PayTreasuryResult,
+	payTreasury,
 } from "./use-cases/pay-treasury";
 export type { OperationAccepted } from "./use-cases/shared";
-export type {
-	TransferTokenInput,
-	TransferTokenResult,
+export {
+	type TransferTokenInput,
+	type TransferTokenResult,
+	transferToken,
 } from "./use-cases/transfer-token";

@@ -12,22 +12,30 @@ import {
 	type EconomicFacts,
 	evaluateOperation,
 	type OperationCommand,
+	TREASURY_WALLET_ID,
 	type WalletFacts,
 } from "@communitytoken/economic-kernel";
-import type { Clock, TransactionScope } from "../ports";
+import type { TransactionContext } from "../ports";
 import {
 	type Actor,
+	ADMIN_API_PRINCIPAL,
 	err,
+	type OperationId,
 	ok,
 	type UseCaseResult,
+	type UserActor,
 	type UserId,
 	type Wallet,
 	type WalletId,
+	walletId,
 } from "../types";
+
+/** The treasury wallet's id branded for the application layer. */
+export const TREASURY_ID: WalletId = walletId(TREASURY_WALLET_ID);
 
 /** Successful result of a committed economic operation. */
 export type OperationAccepted = {
-	readonly operationId: string;
+	readonly operationId: OperationId;
 };
 
 /**
@@ -36,8 +44,8 @@ export type OperationAccepted = {
  * collide with a persisted wallet id: real ids are `crypto.randomUUID()`,
  * which contains no colon.
  */
-export function missingWalletId(userId: UserId): WalletId {
-	return `user:${userId}`;
+export function missingWalletId(user: UserId): WalletId {
+	return walletId(`user:${user}`);
 }
 
 /** Projects a stored wallet onto the fact shape the evaluator reads. */
@@ -67,25 +75,36 @@ export function forbidden(detail: string): UseCaseResult<never> {
 	return err({ type: "forbidden", detail });
 }
 
-export function requireService(
+/**
+ * Returns a forbidden result unless `actor` is the `admin-api` service
+ * principal (issue #4 §10, §13). Administrative use cases take `AdminActor`
+ * so misuse is a compile error in typed code; this guard is the runtime
+ * backstop for callers that bypass the types.
+ */
+export function requireAdmin(
 	actor: Actor,
 	useCase: string,
 ): UseCaseResult<never> | null {
-	return actor.kind === "service"
+	return actor.kind === "service" && actor.principalId === ADMIN_API_PRINCIPAL
 		? null
-		: forbidden(`${useCase} requires a service actor, got ${actor.kind}`);
+		: forbidden(
+				`${useCase} requires the ${ADMIN_API_PRINCIPAL} principal, got ${
+					actor.kind === "service" ? actor.principalId : actor.kind
+				}`,
+			);
 }
 
 /**
  * Narrows `actor` to a user actor or returns a forbidden result. User-facing
  * mutations derive the funding wallet from the actor: a user can only move
  * their own funds (issue #4 §13 — the actor is the resolved internal User,
- * never the calling adapter).
+ * never the calling adapter). Like `requireAdmin`, the guard is the runtime
+ * backstop behind the `UserActor` parameter type.
  */
 export function requireUser(
 	actor: Actor,
 	useCase: string,
-): (Actor & { readonly kind: "user" }) | UseCaseResult<never> {
+): UserActor | UseCaseResult<never> {
 	return actor.kind === "user"
 		? actor
 		: forbidden(`${useCase} requires a user actor, got ${actor.kind}`);
@@ -93,14 +112,13 @@ export function requireUser(
 
 /**
  * Evaluates `command` against `facts` and, when accepted, persists the
- * effect atomically inside the already-open transaction: balance deltas,
- * the EconomicOperation (with §13 actor columns), and the LedgerTransaction,
- * all stamped with a single `clock.nowMs()` sample (issue #4 §8). A
+ * effect inside the already-open section: balance deltas, the
+ * EconomicOperation (with §13 actor columns), and the LedgerTransaction,
+ * all stamped with the section's frozen `now_ms` (issue #4 §8). A
  * rejection persists nothing.
  */
 export function evaluateAndPersist(
-	tx: TransactionScope,
-	clock: Clock,
+	ctx: TransactionContext,
 	actor: Actor,
 	facts: EconomicFacts,
 	command: OperationCommand,
@@ -114,29 +132,29 @@ export function evaluateAndPersist(
 		});
 	}
 	const { effect } = decision;
-	const now = clock.nowMs();
-	for (const [walletId, delta] of effect.deltas) {
+	const now = ctx.nowMs();
+	for (const [id, delta] of effect.deltas) {
 		const base =
-			walletId === facts.from?.id
+			id === facts.from?.id
 				? facts.from
-				: walletId === facts.to?.id
+				: id === facts.to?.id
 					? facts.to
 					: undefined;
 		if (base === undefined) {
-			throw new Error(`effect delta references unknown wallet: ${walletId}`);
+			throw new Error(`effect delta references unknown wallet: ${id}`);
 		}
-		tx.wallets.setBalance(walletId, base.balance + delta, now);
+		ctx.wallets.setBalance(walletId(id), base.balance + delta, now);
 	}
-	const operation = tx.operations.insert({
+	const operation = ctx.operations.insert({
 		kind: effect.kind,
 		metadata: effect.metadata,
 		actor,
 		createdAt: now,
 	});
-	tx.ledger.insert({
+	ctx.ledger.insert({
 		operationId: operation.id,
-		fromWalletId: effect.fromWalletId,
-		toWalletId: effect.toWalletId,
+		fromWalletId: walletId(effect.fromWalletId),
+		toWalletId: walletId(effect.toWalletId),
 		amount: effect.amount,
 		createdAt: now,
 	});

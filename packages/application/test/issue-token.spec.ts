@@ -1,6 +1,6 @@
-import { TREASURY_WALLET_ID } from "@communitytoken/economic-kernel";
 import { describe, expect, it } from "vitest";
-import { ADMIN, OTHER_SERVICE, SYSTEM, userActor } from "./fixtures";
+import { TREASURY_ID } from "../src/use-cases/shared";
+import { ADMIN, asAdmin, OTHER_SERVICE, SYSTEM, userActor } from "./fixtures";
 import { createInMemoryFixture, fixedClock } from "./in-memory";
 
 const M = Number.MAX_SAFE_INTEGER;
@@ -18,7 +18,7 @@ describe("issueToken", () => {
 			ok: true,
 			value: { operationId: expect.any(String) },
 		});
-		const treasury = state.wallets.get(TREASURY_WALLET_ID);
+		const treasury = state.wallets.get(TREASURY_ID);
 		expect(treasury?.balance).toBe(100);
 		expect(treasury?.updatedAt).toBe(1234);
 
@@ -33,16 +33,19 @@ describe("issueToken", () => {
 		expect(state.ledgerRows).toHaveLength(1);
 		const entry = state.ledgerRows[0]?.record;
 		expect(entry?.operationId).toBe(op?.id);
-		expect(entry?.fromWalletId).toBe(TREASURY_WALLET_ID);
-		expect(entry?.toWalletId).toBe(TREASURY_WALLET_ID);
+		expect(entry?.fromWalletId).toBe(TREASURY_ID);
+		expect(entry?.toWalletId).toBe(TREASURY_ID);
 		expect(entry?.amount).toBe(100);
 		expect(entry?.createdAt).toBe(1234);
 	});
 
-	it("any service principal may issue — the route boundary, not the domain, binds the principal", () => {
-		const { app } = createInMemoryFixture();
-		const r = app.issueToken(OTHER_SERVICE, { amount: 5 });
-		expect(r.ok).toBe(true);
+	it("a non-admin service principal is forbidden from issuing", () => {
+		const { app, state } = createInMemoryFixture();
+
+		const r = app.issueToken(asAdmin(OTHER_SERVICE), { amount: 5 });
+
+		expect(r).toMatchObject({ ok: false, error: { type: "forbidden" } });
+		expect(state.operationRows).toHaveLength(0);
 	});
 
 	it.each(["user", "system"] as const)(
@@ -51,12 +54,12 @@ describe("issueToken", () => {
 			const { app, state } = createInMemoryFixture();
 			const actor = kind === "user" ? userActor("alice") : SYSTEM;
 
-			const r = app.issueToken(actor, { amount: 100 });
+			const r = app.issueToken(asAdmin(actor), { amount: 100 });
 
 			expect(r).toMatchObject({ ok: false, error: { type: "forbidden" } });
 			expect(state.operationRows).toHaveLength(0);
 			expect(state.ledgerRows).toHaveLength(0);
-			expect(state.wallets.get(TREASURY_WALLET_ID)?.balance).toBe(0);
+			expect(state.wallets.get(TREASURY_ID)?.balance).toBe(0);
 		},
 	);
 

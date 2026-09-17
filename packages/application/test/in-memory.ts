@@ -22,14 +22,14 @@ import type {
 	WalletRepository,
 } from "../src/ports";
 import {
-	actorId,
-	actorKind,
 	type HistoryRow,
 	type LedgerRecord,
 	ledgerId,
 	type OperationRecord,
 	operationId,
 	type Page,
+	persistedActor,
+	persistedActorOf,
 	userId,
 	type Wallet,
 	type WalletId,
@@ -61,14 +61,18 @@ export function createInMemoryState(): InMemoryState {
 		nextId: 0,
 		nextRowid: 0,
 	};
-	state.wallets.set(TREASURY_ID, {
+	// Stored records are frozen: a value handed out by a repository can
+	// never alias-mutate storage state — updates only happen through
+	// repository mutation methods, which store fresh frozen records.
+	const treasury: Wallet = {
 		id: TREASURY_ID,
 		kind: "system",
 		ownerUserId: null,
 		balance: 0,
 		createdAt: 0,
 		updatedAt: 0,
-	});
+	};
+	state.wallets.set(TREASURY_ID, Object.freeze(treasury));
 	return state;
 }
 
@@ -90,7 +94,7 @@ function walletRepository(state: InMemoryState): WalletRepository {
 			if (wallet === undefined) {
 				throw new Error(`setBalance on missing wallet: ${id}`);
 			}
-			state.wallets.set(id, { ...wallet, balance, updatedAt });
+			state.wallets.set(id, Object.freeze({ ...wallet, balance, updatedAt }));
 		},
 		totalSupply() {
 			let total = 0;
@@ -103,14 +107,13 @@ function walletRepository(state: InMemoryState): WalletRepository {
 function operationRepository(state: InMemoryState): OperationRepository {
 	return {
 		insert(record) {
-			const stored: OperationRecord = {
+			const stored: OperationRecord = Object.freeze({
 				id: operationId(`op-${++state.nextId}`),
 				kind: record.kind,
 				metadata: record.metadata,
-				actorKind: actorKind(record.actor),
-				actorId: actorId(record.actor),
 				createdAt: record.createdAt,
-			};
+				...persistedActor(record.actor),
+			});
 			state.operationRows.push({ rowid: ++state.nextRowid, record: stored });
 			return stored;
 		},
@@ -139,9 +142,8 @@ function operationRepository(state: InMemoryState): OperationRepository {
 					toOwnerUserId:
 						state.wallets.get(entry.toWalletId)?.ownerUserId ?? null,
 					metadata: operation.record.metadata,
-					actorKind: operation.record.actorKind,
-					actorId: operation.record.actorId,
 					createdAt: operation.record.createdAt,
+					...persistedActorOf(operation.record),
 				});
 			}
 			joined.sort((a, b) => b.rowid - a.rowid);
@@ -166,33 +168,41 @@ function operationRepository(state: InMemoryState): OperationRepository {
 function ledgerRepository(state: InMemoryState): LedgerRepository {
 	return {
 		insert(entry) {
-			const stored: LedgerRecord = {
+			const stored: LedgerRecord = Object.freeze({
 				id: ledgerId(`tx-${++state.nextId}`),
 				operationId: entry.operationId,
 				fromWalletId: entry.fromWalletId,
 				toWalletId: entry.toWalletId,
 				amount: entry.amount,
 				createdAt: entry.createdAt,
-			};
+			});
 			state.ledgerRows.push({ rowid: ++state.nextRowid, record: stored });
 			return stored;
 		},
 	};
 }
 
+/**
+ * Runtime thenable detection: functions are thenable-capable too
+ * (`Object.assign(fn, { then() {} })`), so both non-null objects and
+ * functions are inspected before checking for a callable `.then`.
+ */
 function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+	const canBeThenable =
+		(typeof value === "object" && value !== null) ||
+		typeof value === "function";
 	return (
-		typeof value === "object" &&
-		value !== null &&
+		canBeThenable &&
 		"then" in value &&
 		typeof (value as { then: unknown }).then === "function"
 	);
 }
 
 /**
- * Copies the stores a section can write. Records are immutable values, so
- * copying the containers is a faithful snapshot: a write inside the section
- * replaces a map entry or appends a row, never mutates a shared record.
+ * Copies the stores a section can write. Stored records are frozen at
+ * write time, so copying the containers is a faithful snapshot: a write
+ * inside the section replaces a map entry or appends a row, and a record
+ * handed out by a repository method can never alias-mutate storage.
  */
 function cloneState(state: InMemoryState): InMemoryState {
 	return {
@@ -261,17 +271,22 @@ export function createInMemoryUnitOfWork(
 	clock: Clock,
 	options?: InMemoryUnitOfWorkOptions,
 ): UnitOfWork {
-	let open = false;
+	let active = false;
 	return {
 		transact<R>(work: (ctx: TransactionContext) => Synchronous<R>): R {
-			if (open) {
+			if (active) {
 				throw new Error(
 					"nested transact sections are not supported: share the open TransactionContext",
 				);
 			}
-			open = true;
+			active = true;
+			// Each section gets its own lifetime predicate: a context or
+			// repository handle from a previous section stays permanently
+			// dead even while a later section is open — `active` only guards
+			// against nesting, it never revives a stale handle.
+			let sectionOpen = true;
 			function assertOpen() {
-				if (!open) {
+				if (!sectionOpen) {
 					throw new Error("transaction context is closed");
 				}
 			}
@@ -301,7 +316,8 @@ export function createInMemoryUnitOfWork(
 				commitState(state, staging);
 				return result;
 			} finally {
-				open = false;
+				sectionOpen = false;
+				active = false;
 			}
 		},
 	};
@@ -373,7 +389,7 @@ export function createInMemoryFixture(options?: {
 			createdAt: 0,
 			updatedAt: 0,
 		};
-		state.wallets.set(wallet.id, wallet);
+		state.wallets.set(wallet.id, Object.freeze(wallet));
 		return wallet;
 	}
 	return { app, state, clock, uow, seedUser };

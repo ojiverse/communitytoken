@@ -9,30 +9,32 @@ import type { CommunityTokenApplication } from "../src/application";
 import {
 	ADMIN_API_PRINCIPAL,
 	type AdminActor,
+	type OperationRecord,
+	rehydrate,
 	type ServiceActor,
 	TREASURY_SELECTOR,
+	type UnitOfWork,
 	type UserActor,
 	type UserId,
-	userId,
 	userSelector,
 	type WalletId,
-	walletId,
 } from "../src/index";
 
 export function forbiddenByType(
 	app: CommunityTokenApplication,
+	uow: UnitOfWork,
 ): readonly unknown[] {
 	const results: unknown[] = [];
 
 	// @ts-expect-error a plain string is not a UserId
 	const uidFromString: UserId = "alice";
 	// @ts-expect-error a WalletId is not a UserId
-	const uidFromWallet: UserId = walletId("wallet-1");
+	const uidFromWallet: UserId = rehydrate.walletId("wallet-1");
 	// @ts-expect-error a UserId is not a WalletId
-	const widFromUser: WalletId = userId("alice");
+	const widFromUser: WalletId = rehydrate.userId("alice");
 	results.push(uidFromString, uidFromWallet, widFromUser);
 
-	const alice = userId("alice");
+	const alice = rehydrate.userId("alice");
 	const aliceActor: UserActor = { kind: "user", userId: alice };
 	const discordAdapter: ServiceActor = {
 		kind: "service",
@@ -62,6 +64,29 @@ export function forbiddenByType(
 		// @ts-expect-error the admin principal cannot read a user history
 		app.getTransactionHistory(admin, userSelector(alice), {}),
 	);
+
+	// @ts-expect-error a system actor cannot carry an id
+	const systemWithId: OperationRecord = {
+		id: rehydrate.operationId("op-1"),
+		kind: "TOKEN_ISSUANCE",
+		metadata: null,
+		actorKind: "system",
+		actorId: "alice",
+		createdAt: 0,
+	};
+	// @ts-expect-error a user actor cannot have a null id
+	const userWithNullId: OperationRecord = {
+		id: rehydrate.operationId("op-2"),
+		kind: "P2P_TRANSFER",
+		metadata: null,
+		actorKind: "user",
+		actorId: null,
+		createdAt: 0,
+	};
+	results.push(systemWithId, userWithNullId);
+
+	// @ts-expect-error async transaction callbacks are forbidden
+	results.push(uow.transact(async () => 1));
 
 	return results;
 }

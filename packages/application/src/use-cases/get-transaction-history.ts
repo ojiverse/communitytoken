@@ -7,6 +7,7 @@ import {
 	type HistoryRow,
 	ok,
 	type Page,
+	persistedActorOf,
 	type TreasuryWalletSelector,
 	type UseCaseResult,
 	type UserActor,
@@ -41,6 +42,7 @@ export function historyLimit(
 	if (!Number.isInteger(limit) || limit < 1 || limit > MAX_LIMIT) {
 		return err({
 			type: "invalid-input",
+			code: "INVALID_LIMIT",
 			detail: `history limit must be an integer in 1..${MAX_LIMIT}, got ${limit}`,
 		});
 	}
@@ -81,11 +83,10 @@ export function shapeHistoryEntry(
 		fromWalletId: row.fromWalletId,
 		toWalletId: row.toWalletId,
 		metadata: row.metadata,
-		actorKind: row.actorKind,
-		actorId: row.actorId,
 		createdAt: row.createdAt,
 		direction,
 		counterparty,
+		...persistedActorOf(row),
 	};
 }
 

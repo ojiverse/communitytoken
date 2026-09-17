@@ -63,9 +63,13 @@ export type TransactionScope = {
  * recorded result, or a Daily Reward claim row, commit in the same section
  * as the economic mutation (issue #4 §3, §12, §16).
  *
- * The context is valid only while its section is open: every repository
- * method it exposes throws once the owning `transact` call returns —
- * handles must not outlive the boundary.
+ * The context is valid only while its owning section is open: every
+ * repository method it exposes throws once the owning `transact` call
+ * returns — handles must not outlive the boundary, and a stale handle
+ * never becomes usable again while a later section is open. Repository
+ * values are storage-owned immutable records: they cannot alias-mutate
+ * repository state, which only changes through repository mutation
+ * methods.
  */
 export type TransactionContext = TransactionScope & {
 	/**
@@ -90,9 +94,10 @@ export interface UnitOfWork {
 	 * result. On entry the implementation samples its `Clock` exactly once
 	 * and freezes the value as `ctx.nowMs` (issue #4 §8), then invokes
 	 * `work` with the open `TransactionContext`: repository handles valid
-	 * only for this section — they are revoked when the call returns, so a
-	 * captured context or repository cannot read or write outside the
-	 * boundary. When the section does not commit — `work` throws or
+	 * only for this section — they are revoked permanently when the call
+	 * returns, so a captured context or repository cannot read or write
+	 * outside the boundary, and it never becomes usable again while a
+	 * later section is open. When the section does not commit — `work` throws or
 	 * returns a PromiseLike — no repository write made inside it is
 	 * persisted; a rejected use case persists nothing at all. `work` must
 	 * be synchronous — `Synchronous<R>` rejects promise-returning functions

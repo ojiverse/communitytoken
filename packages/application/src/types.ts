@@ -64,6 +64,19 @@ export function ledgerId(raw: string): LedgerId {
 	return raw as LedgerId;
 }
 
+/**
+ * Rehydration of persisted identifiers: brands raw storage strings as
+ * opaque ids. This is the visible unsafe boundary — only persistence
+ * adapters and test support may turn an arbitrary string into an internal
+ * id; the application API consumes already-branded values (issue #4 §22).
+ */
+export const rehydrate = {
+	userId,
+	walletId,
+	operationId,
+	ledgerId,
+} as const;
+
 /** The `actor_kind` values persisted on `economic_operations` (issue #4 §13). */
 export type ActorKind = "user" | "service" | "system";
 
@@ -110,20 +123,45 @@ export type SystemActor = {
  */
 export type Actor = UserActor | ServiceActor | SystemActor;
 
-/** The persisted `actor_kind` column value for `actor`. */
-export function actorKind(actor: Actor): ActorKind {
-	return actor.kind;
-}
+/**
+ * The §13 actor columns as persisted on `economic_operations` and joined
+ * into history rows: kind and id form one union, so a `system` actor cannot
+ * carry an id and `user`/`service` actors cannot lack one.
+ */
+export type PersistedActor =
+	| { readonly actorKind: "user"; readonly actorId: UserId }
+	| { readonly actorKind: "service"; readonly actorId: string }
+	| { readonly actorKind: "system"; readonly actorId: null };
 
-/** The persisted `actor_id` column value for `actor` (null iff `system`). */
-export function actorId(actor: Actor): string | null {
+/**
+ * Projects an `Actor` onto its §13 persisted columns. Repositories call
+ * this when storing an `EconomicOperation`; there is no reverse — stored
+ * columns never rehydrate into an `Actor`.
+ */
+export function persistedActor(actor: Actor): PersistedActor {
 	switch (actor.kind) {
 		case "user":
-			return actor.userId;
+			return { actorKind: "user", actorId: actor.userId };
 		case "service":
-			return actor.principalId;
+			return { actorKind: "service", actorId: actor.principalId };
 		case "system":
-			return null;
+			return { actorKind: "system", actorId: null };
+	}
+}
+
+/**
+ * Re-derives the persisted actor columns of a stored record — for example
+ * when joining an `EconomicOperation` into a history row — without losing
+ * the kind/id correlation the union encodes.
+ */
+export function persistedActorOf(record: PersistedActor): PersistedActor {
+	switch (record.actorKind) {
+		case "user":
+			return { actorKind: "user", actorId: record.actorId };
+		case "service":
+			return { actorKind: "service", actorId: record.actorId };
+		case "system":
+			return { actorKind: "system", actorId: record.actorId };
 	}
 }
 
@@ -191,10 +229,8 @@ export type OperationRecord = {
 	readonly id: OperationId;
 	readonly kind: OperationKind;
 	readonly metadata: string | null;
-	readonly actorKind: ActorKind;
-	readonly actorId: string | null;
 	readonly createdAt: number;
-};
+} & PersistedActor;
 
 /** A persisted LedgerTransaction. */
 export type LedgerRecord = {
@@ -220,10 +256,8 @@ export type HistoryRow = {
 	readonly toWalletId: WalletId;
 	readonly toOwnerUserId: UserId | null;
 	readonly metadata: string | null;
-	readonly actorKind: ActorKind;
-	readonly actorId: string | null;
 	readonly createdAt: number;
-};
+} & PersistedActor;
 
 /**
  * Movement direction relative to the requesting wallet (issue #4 §22):
@@ -248,12 +282,10 @@ export type HistoryEntry = {
 	readonly fromWalletId: WalletId;
 	readonly toWalletId: WalletId;
 	readonly metadata: string | null;
-	readonly actorKind: ActorKind;
-	readonly actorId: string | null;
 	readonly createdAt: number;
 	readonly direction: HistoryDirection;
 	readonly counterparty: "treasury" | UserId;
-};
+} & PersistedActor;
 
 /**
  * One page of a cursor-paginated result. `nextCursor` is an opaque
@@ -284,11 +316,14 @@ export type RejectedError = {
 
 /**
  * A caller-supplied value violated the use case's input contract — for
- * example a history page `limit` outside `1..100`. Distinct from a kernel
- * `rejected`: the evaluator never ran.
+ * example a history page `limit` outside `1..100` (`INVALID_LIMIT`).
+ * Distinct from a kernel `rejected`: the evaluator never ran. `code` is
+ * machine-readable so callers can branch on the reason without parsing
+ * `detail`.
  */
 export type InvalidInputError = {
 	readonly type: "invalid-input";
+	readonly code: "INVALID_LIMIT";
 	readonly detail: string;
 };
 

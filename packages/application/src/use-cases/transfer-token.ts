@@ -51,12 +51,18 @@ export function transferToken(
 		},
 	);
 	if (!result.ok) return result;
+	// An accepted transfer had an existing source wallet when facts were
+	// evaluated; a missing post-read is a storage contract violation, not a
+	// zero balance — fail loudly rather than fabricate a business value.
 	const post = ctx.wallets.findById(from?.id ?? missingWalletId(user.userId));
+	if (post === undefined) {
+		throw new Error("source wallet disappeared inside transaction");
+	}
 	return {
 		ok: true,
 		value: {
 			operationId: result.value.operationId,
-			fromBalance: post?.balance ?? 0,
+			fromBalance: post.balance,
 		},
 	};
 }

@@ -51,12 +51,19 @@ section is a contract violation.
   - `LedgerRepository` — append-only `LedgerTransaction` writes.
 - `TransactionContext` — a `TransactionScope` plus `nowMs`, the section's
   single frozen `now_ms` sampled once at entry before `work` runs (issue #4
-  §8). Context and repository handles are revoked when the section closes:
-  a captured handle cannot read or write after `transact` returns.
+  §8). Context and repository handles are revoked permanently when their
+  owning section closes: a captured handle cannot read or write after
+  `transact` returns, and it never revives while a later section is open.
+  Repository values are storage-owned immutable records — mutation only
+  happens through repository mutation methods.
 
 Record ids are allocated inside repository implementations — identifier
 allocation is a persistence-boundary concern (issue #4 §22), so no
-`IdGenerator`/`RandomSource` port exists yet.
+`IdGenerator`/`RandomSource` port exists yet. For the same reason the only
+raw-string-to-brand coercion is the explicitly named `rehydrate` namespace:
+the visible unsafe boundary where persistence adapters and test support
+turn stored strings into opaque ids. Application API consumes
+already-branded values.
 
 ## Actor model
 
@@ -85,7 +92,8 @@ Use-case authorization:
 
 Newest-first, opaque cursor pagination, default page size 50. A supplied
 `limit` must be an integer in `1..100`; out-of-contract values are an
-`invalid-input` failure, never clamped (issue #4 §17). `TOKEN_ISSUANCE`
+`invalid-input` failure carrying `code: "INVALID_LIMIT"`, never clamped
+(issue #4 §17). `TOKEN_ISSUANCE`
 never appears in a user's history — its movement touches only the treasury
 wallet, so the wallet filter excludes it by construction. The treasury
 selector is the administrative view and does show issuances. `direction` is

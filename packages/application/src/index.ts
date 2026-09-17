@@ -31,6 +31,7 @@ export type {
 	OperationKind,
 	OperationRecord,
 	Page,
+	PersistedActor,
 	RejectedError,
 	RejectionCode,
 	ServiceActor,
@@ -50,16 +51,13 @@ export type {
 } from "./types";
 export {
 	ADMIN_API_PRINCIPAL,
-	actorId,
-	actorKind,
 	err,
-	ledgerId,
 	ok,
-	operationId,
+	persistedActor,
+	persistedActorOf,
+	rehydrate,
 	TREASURY_SELECTOR,
-	userId,
 	userSelector,
-	walletId,
 } from "./types";
 export {
 	type DistributeTokenInput,

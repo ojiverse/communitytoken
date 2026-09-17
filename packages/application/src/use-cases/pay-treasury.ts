@@ -48,12 +48,17 @@ export function payTreasury(
 		},
 	);
 	if (!result.ok) return result;
+	// Same postcondition as transferToken: an accepted payment had an
+	// existing source wallet — a missing post-read fails loudly.
 	const post = ctx.wallets.findById(from?.id ?? missingWalletId(user.userId));
+	if (post === undefined) {
+		throw new Error("source wallet disappeared inside transaction");
+	}
 	return {
 		ok: true,
 		value: {
 			operationId: result.value.operationId,
-			fromBalance: post?.balance ?? 0,
+			fromBalance: post.balance,
 		},
 	};
 }

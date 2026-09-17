@@ -215,7 +215,7 @@ describe("getTransactionHistory", () => {
 
 			expect(r).toMatchObject({
 				ok: false,
-				error: { type: "invalid-input" },
+				error: { type: "invalid-input", code: "INVALID_LIMIT" },
 			});
 		},
 	);

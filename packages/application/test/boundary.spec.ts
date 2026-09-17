@@ -1,18 +1,19 @@
 import { describe, expect, it } from "vitest";
-import {
-	ok,
-	operationId,
-	payTreasury,
-	transferToken,
-	userId,
-	userSelector,
-} from "../src/index";
+import { ok, payTreasury, transferToken, userSelector } from "../src/index";
 import type {
 	NewLedgerEntry,
 	NewOperation,
 	TransactionContext,
 	WalletRepository,
 } from "../src/ports";
+import {
+	type LedgerRecord,
+	type OperationRecord,
+	operationId,
+	userId,
+	type Wallet,
+	type WalletId,
+} from "../src/types";
 import { TREASURY_ID } from "../src/use-cases/shared";
 import { ADMIN, asAdmin, userActor } from "./fixtures";
 import {
@@ -366,6 +367,26 @@ describe("in-memory UnitOfWork rollback", () => {
 		expect(fx.state.wallets.get(TREASURY_ID)?.balance).toBe(0);
 		expectUnchanged(fx, counts);
 	});
+
+	it("a callback that returns a function-valued thenable persists nothing", () => {
+		const { fx } = fixtureWithFault();
+		const counts = {
+			ops: fx.state.operationRows.length,
+			ledger: fx.state.ledgerRows.length,
+		};
+		// biome-ignore lint/suspicious/noThenProperty: the test intentionally constructs a thenable to exercise the runtime guard
+		const thenable = Object.assign(() => {}, { then() {} });
+
+		expect(() =>
+			fx.uow.transact((ctx) => {
+				ctx.wallets.setBalance(TREASURY_ID, 9999, ctx.nowMs);
+				return thenable as unknown as number;
+			}),
+		).toThrow(/synchronous/);
+
+		expect(fx.state.wallets.get(TREASURY_ID)?.balance).toBe(0);
+		expectUnchanged(fx, counts);
+	});
 });
 
 describe("closed transaction context", () => {
@@ -442,5 +463,169 @@ describe("closed transaction context", () => {
 		expect(r.ok).toBe(true);
 		expect(fx.state.wallets.get(TREASURY_ID)?.balance).toBe(10);
 		expect(() => stale.wallets.totalSupply()).toThrow(/closed/);
+	});
+
+	it("a stale context stays dead while a later section is open", () => {
+		const fx = createInMemoryFixture();
+		fx.app.issueToken(ADMIN, { amount: 50 });
+		let stale!: TransactionContext;
+		fx.uow.transact((ctx) => {
+			stale = ctx;
+			return 0;
+		});
+
+		// A's context must not revive while B is open — and it must not
+		// bypass B's staging to mutate committed state.
+		expect(() =>
+			fx.uow.transact((ctx) => {
+				stale.wallets.setBalance(TREASURY_ID, 9999, ctx.nowMs);
+				ctx.wallets.setBalance(TREASURY_ID, 1, ctx.nowMs);
+				throw new Error("abort B");
+			}),
+		).toThrow(/closed/);
+
+		expect(fx.state.wallets.get(TREASURY_ID)?.balance).toBe(50);
+	});
+
+	it("a stale repository handle cannot read or write while a later section is open", () => {
+		const fx = createInMemoryFixture();
+		let staleWallets!: WalletRepository;
+		fx.uow.transact((ctx) => {
+			staleWallets = ctx.wallets;
+			return 0;
+		});
+
+		expect(() =>
+			fx.uow.transact(() => staleWallets.findById(TREASURY_ID)),
+		).toThrow(/closed/);
+		expect(() => fx.uow.transact(() => staleWallets.totalSupply())).toThrow(
+			/closed/,
+		);
+	});
+});
+
+describe("repository value integrity", () => {
+	it("a returned wallet cannot alias-mutate storage before an abort", () => {
+		const fx = createInMemoryFixture();
+		fx.app.issueToken(ADMIN, { amount: 10 });
+
+		expect(() =>
+			fx.uow.transact((ctx) => {
+				const wallet = ctx.wallets.findById(TREASURY_ID);
+				if (wallet === undefined) throw new Error("missing");
+				Object.assign(wallet, { balance: 9999 });
+				throw new Error("abort");
+			}),
+		).toThrow();
+
+		expect(fx.state.wallets.get(TREASURY_ID)?.balance).toBe(10);
+	});
+
+	it("a wallet handed out inside a section stays frozen after commit", () => {
+		const fx = createInMemoryFixture();
+		fx.app.issueToken(ADMIN, { amount: 10 });
+		let wallet!: Wallet;
+		fx.uow.transact((ctx) => {
+			const found = ctx.wallets.findById(TREASURY_ID);
+			if (found === undefined) throw new Error("missing");
+			wallet = found;
+			return 0;
+		});
+
+		expect(() => Object.assign(wallet, { balance: 0 })).toThrow();
+		expect(fx.state.wallets.get(TREASURY_ID)?.balance).toBe(10);
+	});
+
+	it("records returned by insert cannot alias-mutate stored rows", () => {
+		const fx = createInMemoryFixture();
+		let op!: OperationRecord;
+		let entry!: LedgerRecord;
+		fx.uow.transact((ctx) => {
+			op = ctx.operations.insert({
+				kind: "TOKEN_ISSUANCE",
+				metadata: null,
+				actor: ADMIN,
+				createdAt: ctx.nowMs,
+			});
+			entry = ctx.ledger.insert({
+				operationId: op.id,
+				fromWalletId: TREASURY_ID,
+				toWalletId: TREASURY_ID,
+				amount: 1,
+				createdAt: ctx.nowMs,
+			});
+			return 0;
+		});
+
+		expect(() => Object.assign(op, { kind: "P2P_TRANSFER" })).toThrow();
+		expect(() => Object.assign(entry, { amount: 9999 })).toThrow();
+		expect(fx.state.operationRows[0]?.record.kind).toBe("TOKEN_ISSUANCE");
+		expect(fx.state.ledgerRows[0]?.record.amount).toBe(1);
+	});
+});
+
+describe("impossible postconditions", () => {
+	function fixtureWithVanishingWallet() {
+		let vanish = false;
+		let target: WalletId | null = null;
+		const fx = createInMemoryFixture({
+			wrapScope: (scope) => ({
+				...scope,
+				wallets: {
+					...scope.wallets,
+					findById(id: WalletId) {
+						if (vanish && id === target) return undefined;
+						return scope.wallets.findById(id);
+					},
+				},
+			}),
+		});
+		const alice = fx.seedUser("alice");
+		target = alice.id;
+		fx.seedUser("bob");
+		fx.app.issueToken(ADMIN, { amount: 100 });
+		fx.app.distributeToken(ADMIN, { toUserId: userId("alice"), amount: 100 });
+		return {
+			fx,
+			setVanish(value: boolean) {
+				vanish = value;
+			},
+		};
+	}
+
+	it("an accepted transfer whose source wallet vanishes fails loudly and rolls back", () => {
+		const { fx, setVanish } = fixtureWithVanishingWallet();
+		const ops = fx.state.operationRows.length;
+		const led = fx.state.ledgerRows.length;
+		setVanish(true);
+
+		expect(() =>
+			fx.app.transferToken(userActor("alice"), {
+				toUserId: userId("bob"),
+				amount: 10,
+			}),
+		).toThrow(/disappeared/);
+
+		setVanish(false);
+		expect(walletOf(fx.state, "alice")?.balance).toBe(100);
+		expect(walletOf(fx.state, "bob")?.balance).toBe(0);
+		expect(fx.state.operationRows).toHaveLength(ops);
+		expect(fx.state.ledgerRows).toHaveLength(led);
+	});
+
+	it("an accepted payment whose source wallet vanishes fails loudly and rolls back", () => {
+		const { fx, setVanish } = fixtureWithVanishingWallet();
+		const ops = fx.state.operationRows.length;
+		const led = fx.state.ledgerRows.length;
+		setVanish(true);
+
+		expect(() =>
+			fx.app.payTreasury(userActor("alice"), { amount: 10 }),
+		).toThrow(/disappeared/);
+
+		setVanish(false);
+		expect(walletOf(fx.state, "alice")?.balance).toBe(100);
+		expect(fx.state.operationRows).toHaveLength(ops);
+		expect(fx.state.ledgerRows).toHaveLength(led);
 	});
 });

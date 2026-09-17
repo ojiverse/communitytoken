@@ -39,9 +39,9 @@ section is a contract violation.
 ## Ports
 
 - `Clock` — epoch-millisecond time authority consumed by the `UnitOfWork`
-  implementation, which samples it once per serialized transaction and
-  freezes the value on the `TransactionContext` (issue #4 §8). Tests inject
-  fixed/stepping clocks.
+  implementation, which samples it exactly once per serialized transaction
+  at entry and freezes the value on the `TransactionContext` (issue #4 §8).
+  Tests inject fixed/stepping clocks.
 - `UnitOfWork` — the atomic boundary described above.
 - `TransactionScope` — the repositories valid inside a section:
   - `WalletRepository` — wallet lookup and absolute balance writes driven by
@@ -49,8 +49,10 @@ section is a contract violation.
   - `OperationRepository` — `EconomicOperation` append plus the operation+ledger
     history join (newest-first, opaque cursor).
   - `LedgerRepository` — append-only `LedgerTransaction` writes.
-- `TransactionContext` — a `TransactionScope` plus `nowMs()`, the section's
-  single frozen `now_ms` sampled lazily on first use.
+- `TransactionContext` — a `TransactionScope` plus `nowMs`, the section's
+  single frozen `now_ms` sampled once at entry before `work` runs (issue #4
+  §8). Context and repository handles are revoked when the section closes:
+  a captured handle cannot read or write after `transact` returns.
 
 Record ids are allocated inside repository implementations — identifier
 allocation is a persistence-boundary concern (issue #4 §22), so no

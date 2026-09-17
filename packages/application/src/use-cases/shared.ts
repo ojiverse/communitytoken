@@ -132,7 +132,7 @@ export function evaluateAndPersist(
 		});
 	}
 	const { effect } = decision;
-	const now = ctx.nowMs();
+	const now = ctx.nowMs;
 	for (const [id, delta] of effect.deltas) {
 		const base =
 			id === facts.from?.id

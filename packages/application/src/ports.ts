@@ -62,15 +62,20 @@ export type TransactionScope = {
  * the transaction and extend the atomic unit — an idempotency check and its
  * recorded result, or a Daily Reward claim row, commit in the same section
  * as the economic mutation (issue #4 §3, §12, §16).
+ *
+ * The context is valid only while its section is open: every repository
+ * method it exposes throws once the owning `transact` call returns —
+ * handles must not outlive the boundary.
  */
 export type TransactionContext = TransactionScope & {
 	/**
-	 * The single frozen `now_ms` of this section (issue #4 §8): sampled from
-	 * the section's `Clock` lazily on first call, then identical for every
-	 * call inside the same section. A section that performs no timestamped
-	 * write never samples the clock at all.
+	 * The section's single frozen `now_ms` (issue #4 §8): the `UnitOfWork`
+	 * implementation samples its `Clock` exactly once after entering the
+	 * serialized transaction and before `work` runs, so every timestamped
+	 * write in the section shares one value and a clock read during the
+	 * callback cannot split it.
 	 */
-	readonly nowMs: () => number;
+	readonly nowMs: number;
 };
 
 /**
@@ -82,13 +87,16 @@ export type TransactionContext = TransactionScope & {
 export interface UnitOfWork {
 	/**
 	 * Runs `work` inside one serialized atomic section and returns its
-	 * result. `work` receives the open `TransactionContext`: repository
-	 * handles valid only for this section and the section's frozen clock.
-	 * When the section does not commit — `work` throws or returns a
-	 * PromiseLike — no repository write made inside it is persisted; a
-	 * rejected use case persists nothing at all. `work` must be
-	 * synchronous — `Synchronous<R>` rejects promise-returning functions at
-	 * compile time.
+	 * result. On entry the implementation samples its `Clock` exactly once
+	 * and freezes the value as `ctx.nowMs` (issue #4 §8), then invokes
+	 * `work` with the open `TransactionContext`: repository handles valid
+	 * only for this section — they are revoked when the call returns, so a
+	 * captured context or repository cannot read or write outside the
+	 * boundary. When the section does not commit — `work` throws or
+	 * returns a PromiseLike — no repository write made inside it is
+	 * persisted; a rejected use case persists nothing at all. `work` must
+	 * be synchronous — `Synchronous<R>` rejects promise-returning functions
+	 * at compile time.
 	 * @throws {Error} when `work` returns a PromiseLike (the type guard can
 	 *   be escaped through `any`; implementations must check at runtime too).
 	 * @throws {Error} when a section is opened inside an already-open

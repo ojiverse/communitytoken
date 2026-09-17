@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { ok, payTreasury, transferToken, userId } from "../src/index";
-import type { NewLedgerEntry, NewOperation } from "../src/ports";
+import {
+	ok,
+	operationId,
+	payTreasury,
+	transferToken,
+	userId,
+	userSelector,
+} from "../src/index";
+import type {
+	NewLedgerEntry,
+	NewOperation,
+	TransactionContext,
+	WalletRepository,
+} from "../src/ports";
 import { TREASURY_ID } from "../src/use-cases/shared";
 import { ADMIN, asAdmin, userActor } from "./fixtures";
 import {
@@ -8,6 +20,7 @@ import {
 	createInMemoryState,
 	createInMemoryUnitOfWork,
 	fixedClock,
+	stepClock,
 } from "./in-memory";
 
 function walletOf(
@@ -40,7 +53,7 @@ describe("atomic boundary invariant", () => {
 		expect(() => uow.transact(() => uow.transact(() => 1))).toThrow(/nested/);
 	});
 
-	it("samples the clock lazily: once per section, shared by every timestamped write", () => {
+	it("samples the clock once per section at entry: every timestamped write shares the value", () => {
 		let calls = 0;
 		const { app, state, seedUser } = createInMemoryFixture({
 			clock: {
@@ -63,9 +76,9 @@ describe("atomic boundary invariant", () => {
 		expect(calls).toBe(2);
 	});
 
-	it("a section that performs no timestamped write never samples the clock", () => {
+	it("samples the clock exactly once for every section — rejected, read-only, or aborting", () => {
 		let calls = 0;
-		const { app, seedUser } = createInMemoryFixture({
+		const { app, uow, seedUser } = createInMemoryFixture({
 			clock: {
 				nowMs() {
 					calls += 1;
@@ -77,9 +90,50 @@ describe("atomic boundary invariant", () => {
 
 		const rejected = app.issueToken(ADMIN, { amount: -1 });
 		expect(rejected.ok).toBe(false);
-		const read = app.getBalance(ADMIN, { type: "treasury" });
+		const read = app.getBalance(
+			userActor("alice"),
+			userSelector(userId("alice")),
+		);
 		expect(read.ok).toBe(true);
-		expect(calls).toBe(0);
+		expect(() =>
+			uow.transact(() => {
+				throw new Error("boom");
+			}),
+		).toThrow(/boom/);
+
+		expect(calls).toBe(3);
+	});
+
+	it("freezes now_ms at section entry: an advancing clock cannot split a section", () => {
+		const fx = createInMemoryFixture({ clock: stepClock(1000, 5000) });
+		fx.seedUser("alice");
+		fx.seedUser("bob");
+		fx.app.issueToken(ADMIN, { amount: 100 });
+		fx.app.distributeToken(ADMIN, { toUserId: userId("alice"), amount: 100 });
+
+		const r = fx.uow.transact((ctx) => {
+			const t = transferToken(ctx, userActor("alice"), {
+				toUserId: userId("bob"),
+				amount: 10,
+			});
+			if (!t.ok) return t;
+			const p = payTreasury(ctx, userActor("alice"), { amount: 5 });
+			if (!p.ok) return p;
+			return ok(ctx.nowMs);
+		});
+
+		// The third section samples 11000 once; both operations inside share
+		// it even though the underlying clock advances 5000ms per read.
+		expect(r).toEqual({ ok: true, value: 11000 });
+		expect(
+			fx.state.operationRows
+				.slice(-2)
+				.every((o) => o.record.createdAt === 11000),
+		).toBe(true);
+		expect(
+			fx.state.ledgerRows.slice(-2).every((l) => l.record.createdAt === 11000),
+		).toBe(true);
+		expect(walletOf(fx.state, "alice")?.updatedAt).toBe(11000);
 	});
 
 	it("a forbidden call writes nothing", () => {
@@ -286,7 +340,7 @@ describe("in-memory UnitOfWork rollback", () => {
 
 		expect(() =>
 			fx.uow.transact((ctx) => {
-				ctx.wallets.setBalance(TREASURY_ID, 9999, ctx.nowMs());
+				ctx.wallets.setBalance(TREASURY_ID, 9999, ctx.nowMs);
 				throw new Error("abort");
 			}),
 		).toThrow(/abort/);
@@ -304,12 +358,89 @@ describe("in-memory UnitOfWork rollback", () => {
 
 		expect(() =>
 			fx.uow.transact((ctx) => {
-				ctx.wallets.setBalance(TREASURY_ID, 9999, ctx.nowMs());
+				ctx.wallets.setBalance(TREASURY_ID, 9999, ctx.nowMs);
 				return Promise.resolve(0) as unknown as number;
 			}),
 		).toThrow(/synchronous/);
 
 		expect(fx.state.wallets.get(TREASURY_ID)?.balance).toBe(0);
 		expectUnchanged(fx, counts);
+	});
+});
+
+describe("closed transaction context", () => {
+	it("a captured context cannot read or write after the section commits", () => {
+		const fx = createInMemoryFixture();
+		fx.seedUser("alice");
+		let captured!: TransactionContext;
+		fx.uow.transact((ctx) => {
+			captured = ctx;
+			return 0;
+		});
+
+		expect(() => captured.wallets.findById(TREASURY_ID)).toThrow(/closed/);
+		expect(() => captured.wallets.setBalance(TREASURY_ID, 9999, 1)).toThrow(
+			/closed/,
+		);
+		expect(() => captured.wallets.totalSupply()).toThrow(/closed/);
+		expect(() =>
+			captured.operations.listForWallet(TREASURY_ID, null, 10),
+		).toThrow(/closed/);
+		expect(() =>
+			captured.ledger.insert({
+				operationId: operationId("op-leaked"),
+				fromWalletId: TREASURY_ID,
+				toWalletId: TREASURY_ID,
+				amount: 1,
+				createdAt: 0,
+			}),
+		).toThrow(/closed/);
+
+		expect(fx.state.wallets.get(TREASURY_ID)?.balance).toBe(0);
+		expect(fx.state.operationRows).toHaveLength(0);
+		expect(fx.state.ledgerRows).toHaveLength(0);
+	});
+
+	it("a captured context is unusable after the section aborts", () => {
+		const fx = createInMemoryFixture();
+		let captured!: TransactionContext;
+		expect(() =>
+			fx.uow.transact((ctx) => {
+				captured = ctx;
+				throw new Error("abort");
+			}),
+		).toThrow(/abort/);
+
+		expect(() => captured.wallets.totalSupply()).toThrow(/closed/);
+		expect(() => captured.wallets.setBalance(TREASURY_ID, 1, 1)).toThrow(
+			/closed/,
+		);
+	});
+
+	it("a captured repository handle is revoked with its section", () => {
+		const fx = createInMemoryFixture();
+		let wallets!: WalletRepository;
+		fx.uow.transact((ctx) => {
+			wallets = ctx.wallets;
+			return 0;
+		});
+
+		expect(() => wallets.findById(TREASURY_ID)).toThrow(/closed/);
+		expect(() => wallets.setBalance(TREASURY_ID, 5, 0)).toThrow(/closed/);
+	});
+
+	it("a later section works normally after an earlier context was revoked", () => {
+		const fx = createInMemoryFixture();
+		let stale!: TransactionContext;
+		fx.uow.transact((ctx) => {
+			stale = ctx;
+			return 0;
+		});
+
+		const r = fx.app.issueToken(ADMIN, { amount: 10 });
+
+		expect(r.ok).toBe(true);
+		expect(fx.state.wallets.get(TREASURY_ID)?.balance).toBe(10);
+		expect(() => stale.wallets.totalSupply()).toThrow(/closed/);
 	});
 });

@@ -224,27 +224,57 @@ export type InMemoryUnitOfWorkOptions = {
 };
 
 /**
+ * Binds a repository to the section's open/closed lifetime: every method
+ * asserts the section is still open before delegating, so a repository
+ * handle that escapes its `transact` callback can neither read nor mutate
+ * state after the section closes — whether it committed or rolled back.
+ */
+function guardRepository<T extends object>(
+	repository: T,
+	assertOpen: () => void,
+): T {
+	return new Proxy(repository, {
+		get(target, property, receiver) {
+			const value = Reflect.get(target, property, receiver);
+			if (typeof value !== "function") return value;
+			return function (this: unknown, ...args: unknown[]) {
+				assertOpen();
+				return (value as (...a: unknown[]) => unknown).apply(target, args);
+			};
+		},
+	});
+}
+
+/**
  * An in-memory `UnitOfWork` faithful to the atomic boundary it models:
- * `work` runs against a staging copy of the state, and the staging copy
- * replaces the committed state only when `work` returns a non-Promise
- * result. A throw — including the runtime PromiseLike check — discards the
- * staging copy, so no observable state change survives an aborted section.
- * Sections do not nest: composing work shares the open `TransactionContext`.
+ * entering a section samples the `Clock` exactly once and freezes the value
+ * as `ctx.nowMs` (issue #4 §8); `work` runs against a staging copy of the
+ * state that replaces the committed state only when `work` returns a
+ * non-Promise result — a throw, including the runtime PromiseLike check,
+ * discards the staging copy, so no observable state change survives an
+ * aborted section. Repository handles are revoked when the section closes,
+ * and sections do not nest: composing work shares the open
+ * `TransactionContext`.
  */
 export function createInMemoryUnitOfWork(
 	state: InMemoryState,
 	clock: Clock,
 	options?: InMemoryUnitOfWorkOptions,
 ): UnitOfWork {
-	let active = false;
+	let open = false;
 	return {
 		transact<R>(work: (ctx: TransactionContext) => Synchronous<R>): R {
-			if (active) {
+			if (open) {
 				throw new Error(
 					"nested transact sections are not supported: share the open TransactionContext",
 				);
 			}
-			active = true;
+			open = true;
+			function assertOpen() {
+				if (!open) {
+					throw new Error("transaction context is closed");
+				}
+			}
 			try {
 				const staging = cloneState(state);
 				const scope: TransactionScope = {
@@ -253,13 +283,14 @@ export function createInMemoryUnitOfWork(
 					ledger: ledgerRepository(staging),
 				};
 				const wrapped = options?.wrapScope?.(scope) ?? scope;
-				let sampled: number | undefined;
+				// §8: exactly one clock sample per section, taken before any
+				// caller code runs.
+				const nowMs = clock.nowMs();
 				const ctx: TransactionContext = {
-					...wrapped,
-					nowMs() {
-						if (sampled === undefined) sampled = clock.nowMs();
-						return sampled;
-					},
+					nowMs,
+					wallets: guardRepository(wrapped.wallets, assertOpen),
+					operations: guardRepository(wrapped.operations, assertOpen),
+					ledger: guardRepository(wrapped.ledger, assertOpen),
 				};
 				const result = work(ctx);
 				if (isPromiseLike(result)) {
@@ -270,7 +301,7 @@ export function createInMemoryUnitOfWork(
 				commitState(state, staging);
 				return result;
 			} finally {
-				active = false;
+				open = false;
 			}
 		},
 	};

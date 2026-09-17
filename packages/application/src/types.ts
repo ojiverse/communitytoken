@@ -29,7 +29,10 @@ export type Brand<T, B> = T & { readonly [brand]: B };
  */
 export type UserId = Brand<string, "UserId">;
 
-/** Brands `raw` as a UserId. Identity resolution owns id creation. */
+/**
+ * Brands/rehydrates a persisted internal User identifier as `UserId`.
+ * Creation/allocation belongs to the persistence boundary (issue #4 §22).
+ */
 export function userId(raw: string): UserId {
 	return raw as UserId;
 }

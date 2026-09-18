@@ -39,8 +39,7 @@ A claim exactly at a boundary belongs to the new window.
 3. A failed claim does not consume eligibility.
 4. Treasury insufficiency is a failed claim and may be retried while eligibility remains.
 5. A successful claim and its eligibility consumption are one indivisible semantic result.
-6. Repeating the same logical delivery request must not create another successful claim.
-7. Changing the reward amount or reset offset changes product policy and therefore requires an explicit specification change.
+6. Changing the reward amount or reset offset changes product policy and therefore requires an explicit specification change.
 
 Daily Reward never implies automatic issuance. Preventing treasury exhaustion is an operational
 concern, not a reward-domain exception.

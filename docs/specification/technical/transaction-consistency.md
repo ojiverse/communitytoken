@@ -45,12 +45,13 @@ only through the mutation operations owned by the active transaction.
 
 ## Synchronous critical section
 
-The atomic section contains no external I/O and does not suspend.
+The atomic section does not suspend and performs no external interaction.
 
-Work that may wait on an external system must complete before entering the serialized section.
+Any work that can wait on another system or continue asynchronously must complete before the
+serialized section begins.
 
-Returning a thenable from the section is a contract violation and aborts the transaction, regardless
-of whether the thenable is represented as an object or function.
+If execution attempts to escape the synchronous section before producing its final result, the
+transaction is invalid and must not commit.
 
 ## Composition
 

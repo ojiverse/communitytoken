@@ -6,37 +6,35 @@ Durable Objects.
 ## Status
 
 The legacy Supabase/Deno implementation has been removed from the tree
-([issue #4](https://github.com/ojiverse/communitytoken/issues/4) §20); git history preserves it.
-The repository currently contains the Phase 1 deliverables of the rebuild:
+([issue #4](https://github.com/ojiverse/communitytoken/issues/4)); git history preserves it.
 
-- `packages/economic-kernel` — runtime-independent pure economic evaluator
-  (`@communitytoken/economic-kernel`)
-- `packages/economic-contract` — executable economic contract suite
-  (`@communitytoken/economic-contract`)
-- `poc/community-state` — Cloudflare Durable Object + SQLite persistence proof of concept
-- `docs/economic-model.md` — normative economic specification
+The repository contains the runtime-independent economic core, executable contract suite,
+application boundary, and persistence proof used by the current rebuild.
 
-Phase 2 ([issue #4](https://github.com/ojiverse/communitytoken/issues/4)) builds the production
-service on top of these under `apps/` and `packages/application`.
+Phase 2 is tracked by
+[issue #4](https://github.com/ojiverse/communitytoken/issues/4).
 
 ## Development
 
 Requires Node.js >= 22 and pnpm >= 10.
 
 ```bash
-pnpm install        # install workspace dependencies
-pnpm -r test        # run package tests
-pnpm -r check       # typecheck all packages
+pnpm install
+pnpm -r test
+pnpm -r check
 ```
 
-Formatting and linting use Biome; secrets scanning uses secretlint. Both run on staged files via
-simple-git-hooks + lint-staged.
+Formatting and linting use Biome; secrets scanning uses secretlint.
 
 ## Documentation
 
-- [Economic Model](./docs/economic-model.md) — normative economic specification
+- [Specifications](./docs/specification/README.md) — normative domain and technical invariants
+- [Economic Model](./docs/economic-model.md) — compatibility entry point into the economic specifications
 - [Engineering Principles](./docs/engineering-principles/README.md)
 - [Design Policies](./docs/design-policy/README.md)
+
+Implementation sequencing, concrete runtime choices, deployment facts, and feature delivery details
+remain in the relevant GitHub issues rather than the normative specifications.
 
 ## LICENSE
 

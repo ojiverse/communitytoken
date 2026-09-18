@@ -1,5 +1,5 @@
 /**
- * Ports of the application layer (issue #4 §2): the behavioral contracts the
+ * Ports of the application layer (the transaction-consistency specification): the behavioral contracts the
  * runtime-independent use cases require from their environment. Only the
  * ports consumed by the initial economic use cases are declared here; later
  * phases add theirs with the feature that consumes them.
@@ -26,7 +26,7 @@ import type {
 } from "./types";
 
 /**
- * The application clock authority (issue #4 §8). Callers never supply
+ * The application clock authority (the temporal-authority specification). Callers never supply
  * authoritative timestamps; the production implementation samples
  * `Date.now()` once inside each serialized transaction and serves that
  * frozen value for the whole transaction. Tests inject a fixed or stepping
@@ -61,7 +61,7 @@ export type TransactionScope = {
  * Use-case operations take this context so that outer orchestration can own
  * the transaction and extend the atomic unit — an idempotency check and its
  * recorded result, or a Daily Reward claim row, commit in the same section
- * as the economic mutation (issue #4 §3, §12, §16).
+ * as the economic mutation (the transaction, idempotency, and Daily Reward specifications).
  *
  * The context is valid only while its owning section is open: every
  * repository method it exposes throws once the owning `transact` call
@@ -73,7 +73,7 @@ export type TransactionScope = {
  */
 export type TransactionContext = TransactionScope & {
 	/**
-	 * The section's single frozen `now_ms` (issue #4 §8): the `UnitOfWork`
+	 * The section's single frozen `now_ms` (the temporal-authority specification): the `UnitOfWork`
 	 * implementation samples its `Clock` exactly once after entering the
 	 * serialized transaction and before `work` runs, so every timestamped
 	 * write in the section shares one value and a clock read during the
@@ -84,7 +84,7 @@ export type TransactionContext = TransactionScope & {
 
 /**
  * The serialized atomic commit boundary every application mutation runs
- * inside (issue #4 §2–§3). The production implementation maps this onto the
+ * inside (the transaction-consistency specification). The production implementation maps this onto the
  * CommunityState Durable Object's synchronous storage transaction; the
  * boundary is a contract of this layer, not a Cloudflare type.
  */
@@ -92,7 +92,7 @@ export interface UnitOfWork {
 	/**
 	 * Runs `work` inside one serialized atomic section and returns its
 	 * result. On entry the implementation samples its `Clock` exactly once
-	 * and freezes the value as `ctx.nowMs` (issue #4 §8), then invokes
+	 * and freezes the value as `ctx.nowMs` (the temporal-authority specification), then invokes
 	 * `work` with the open `TransactionContext`: repository handles valid
 	 * only for this section — they are revoked permanently when the call
 	 * returns, so a captured context or repository cannot read or write
@@ -132,7 +132,7 @@ export interface WalletRepository {
 	 */
 	setBalance(id: WalletId, balance: number, updatedAt: number): void;
 
-	/** Returns the sum of all wallet balances — the §4 `supply(S)` fact. */
+	/** Returns the sum of all wallet balances — the the economic-state specification `supply(S)` fact. */
 	totalSupply(): number;
 }
 
@@ -146,7 +146,7 @@ export type NewOperation = {
 
 /**
  * EconomicOperation records. Append is the only mutation; history queries
- * join each operation to its ledger movement (the §4 `op : L -> O`
+ * join each operation to its ledger movement (the the economic-state specification `op : L -> O`
  * correspondence is a bijection in the current model).
  */
 export interface OperationRepository {
@@ -162,7 +162,7 @@ export interface OperationRepository {
 	 * `walletId` (`from_wallet_id` or `to_wallet_id` equals it), newest
 	 * first. `cursor` is the opaque continuation value from a previous call;
 	 * pass `null` for the first page. The implementation owns the cursor
-	 * encoding (production encodes the storage rowid per issue #4 §22).
+	 * encoding (production encodes the storage rowid per the transaction-consistency specification2).
 	 * `nextCursor` is `null` when the result is exhausted. `limit` is a
 	 * positive page size already validated by the caller.
 	 */
@@ -184,7 +184,7 @@ export type NewLedgerEntry = {
 
 /**
  * LedgerTransaction records. Append is the only mutation — the ledger is
- * append-only as a matter of storage-enforced semantics (issue #4 §3).
+ * append-only as a matter of storage-enforced semantics (the transaction-consistency specification).
  */
 export interface LedgerRepository {
 	/**

@@ -15,7 +15,7 @@ export type IssueTokenInput = {
 
 /**
  * Explicit `TOKEN_ISSUANCE`: increases total supply by crediting the
- * treasury (issue #4 §4 — issuance is always explicit and auditable).
+ * treasury (the economic-transition specification — issuance is always explicit and auditable).
  * Restricted to the `admin-api` principal; the `AdminActor` parameter type
  * makes a call with any other actor inexpressible in typed code, and the
  * runtime guard backstops untyped callers.

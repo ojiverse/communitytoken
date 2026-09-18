@@ -1,12 +1,12 @@
 # @communitytoken/application
 
 The runtime-independent application layer of the Phase 2 CommunityToken service
-(issue #4). It owns use-case orchestration, actor context, authorization, and
+(see docs/specification/README.md). It owns use-case orchestration, actor context, authorization, and
 visibility policy. It owns **no** storage, no platform/runtime types, and no
 economic rules — the economic decision boundary remains
 `@communitytoken/economic-kernel`.
 
-Trusted surfaces (`/internal/*` and `/admin/*` in issue #4 §11) resolve an
+Trusted surfaces (`/internal/*` and `/admin/*` in the economic-transition specification1) resolve an
 `Actor` and invoke `CommunityTokenApplication` methods. External-identity
 resolution, credential checks, and idempotency are boundary concerns owned by
 later PRs and deliberately absent here.
@@ -30,8 +30,8 @@ transaction; this package depends on no Cloudflare types.
 
 Every facade method opens its own section. The use-case operations are also
 exported directly and take an already-open `TransactionContext`, so outer
-orchestration owns the transaction and can extend the atomic unit — the §12
-idempotency record or the §16 Daily Reward claim row commits in the same
+orchestration owns the transaction and can extend the atomic unit — the the idempotency specification
+idempotency record or the the Daily Reward specification Daily Reward claim row commits in the same
 section as the economic mutation it protects. Sections do not nest: composed
 operations share the one open context, and opening `transact` inside an open
 section is a contract violation.
@@ -40,7 +40,7 @@ section is a contract violation.
 
 - `Clock` — epoch-millisecond time authority consumed by the `UnitOfWork`
   implementation, which samples it exactly once per serialized transaction
-  at entry and freezes the value on the `TransactionContext` (issue #4 §8).
+  at entry and freezes the value on the `TransactionContext` (the temporal-authority specification).
   Tests inject fixed/stepping clocks.
 - `UnitOfWork` — the atomic boundary described above.
 - `TransactionScope` — the repositories valid inside a section:
@@ -58,7 +58,7 @@ section is a contract violation.
   happens through repository mutation methods.
 
 Record ids are allocated inside repository implementations — identifier
-allocation is a persistence-boundary concern (issue #4 §22), so no
+allocation is a persistence-boundary concern (the transaction-consistency specification2), so no
 `IdGenerator`/`RandomSource` port exists yet. For the same reason the only
 raw-string-to-brand coercion is the explicitly named `rehydrate` namespace:
 the visible unsafe boundary where persistence adapters and test support
@@ -68,7 +68,7 @@ already-branded values.
 ## Actor model
 
 `Actor` is a discriminated union encoding the persisted `actor_kind` /
-`actor_id` columns of issue #4 §13 at compile time: `user` and `service`
+`actor_id` columns of the economic-transition specification3 at compile time: `user` and `service`
 actors carry an identifier, `system` carries none. The actor is attached when
 the `EconomicOperation` is persisted; it is never an input to the economic
 evaluator.
@@ -76,14 +76,14 @@ evaluator.
 Use-case authorization:
 
 - `issueToken`, `distributeToken` — require `AdminActor`: the `admin-api`
-  service principal (issue #4 §10). A call with any other principal — such as
+  service principal (the economic-transition specification0). A call with any other principal — such as
   `discord-adapter` — is a compile error in typed code and a `forbidden`
   result at runtime.
 - `transferToken`, `payTreasury` — require `UserActor`; the source wallet is
   the actor's own by construction. A user actor can never move another user's
   funds, and `discord-adapter` can never appear as the actor of a
   user-initiated operation.
-- `getBalance`, `getTransactionHistory` — self-only (issue #4 §17): a user
+- `getBalance`, `getTransactionHistory` — self-only (the economic-transition specification7): a user
   selector requires the matching `UserActor`, the treasury selector requires
   `AdminActor`. The overloads pair actor and selector so a mismatched call
   does not type-check.
@@ -93,7 +93,7 @@ Use-case authorization:
 Newest-first, opaque cursor pagination, default page size 50. A supplied
 `limit` must be an integer in `1..100`; out-of-contract values are an
 `invalid-input` failure carrying `code: "INVALID_LIMIT"`, never clamped
-(issue #4 §17). `TOKEN_ISSUANCE`
+(the economic-transition specification7). `TOKEN_ISSUANCE`
 never appears in a user's history — its movement touches only the treasury
 wallet, so the wallet filter excludes it by construction. The treasury
 selector is the administrative view and does show issuances. `direction` is
@@ -101,7 +101,7 @@ selector is the administrative view and does show issuances. `direction` is
 `"self"` for a net-zero self-movement (a `P2P_TRANSFER` whose sides are the
 same wallet); `counterparty` is `"treasury"` for the system side or the other
 wallet's owning user id — the user's own id for a self-transfer (issue #4
-§22).
+the persistence specification).
 
 ## Deferred to later PRs (per the approved slicing)
 

@@ -1,6 +1,6 @@
 /**
  * Compile-time negative coverage for the types-as-design contract (issue #4
- * §5, §10, §13, §22). Every `@ts-expect-error` below must remain a type
+ * §5, §10, the actor/visibility specification, the persistence specification). Every `@ts-expect-error` below must remain a type
  * error: if a public signature is accidentally weakened, `tsc --noEmit`
  * reports the directive as unused and `pnpm check` fails. This file is
  * never executed — vitest only runs `*.spec.ts`.

@@ -17,7 +17,7 @@ export type BalanceResult = {
 };
 
 /**
- * Reads a user wallet's balance under the §17 self-only visibility rule: a
+ * Reads a user wallet's balance under the the actor/visibility specification self-only visibility rule: a
  * user may read only their own wallet. A user with no wallet is reported as
  * `WALLET_NOT_FOUND`.
  *
@@ -32,7 +32,7 @@ export function getBalance(
 
 /**
  * Reads the treasury balance — administrative treasury inspection (issue #4
- * §10, §17): only the `admin-api` principal may express the call.
+ * §10, the actor/visibility specification): only the `admin-api` principal may express the call.
  */
 export function getBalance(
 	ctx: TransactionContext,

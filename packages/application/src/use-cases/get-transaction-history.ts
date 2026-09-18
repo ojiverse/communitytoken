@@ -20,7 +20,7 @@ import { forbidden, requireAdmin, TREASURY_ID } from "./shared";
 export type HistoryRequest = {
 	readonly cursor?: string | null;
 	/**
-	 * Page size: an integer in `1..100`, default 50 (issue #4 §17). Values
+	 * Page size: an integer in `1..100`, default 50 (the economic-transition specification7). Values
 	 * outside the contract are an `invalid-input` failure, never clamped.
 	 */
 	readonly limit?: number;
@@ -30,7 +30,7 @@ const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
 
 /**
- * Validates `limit` against the §17 contract: an integer in `1..100`,
+ * Validates `limit` against the the actor/visibility specification contract: an integer in `1..100`,
  * defaulting to 50. Out-of-contract values are an `invalid-input` failure —
  * the boundary owns rejecting malformed requests, and this layer does not
  * silently normalize caller input.
@@ -51,7 +51,7 @@ export function historyLimit(
 
 /**
  * Shapes a join row into the requester-relative history entry of issue #4
- * §22: `direction` is `"self"` for a net-zero self-movement (a
+ * the persistence specification: `direction` is `"self"` for a net-zero self-movement (a
  * `P2P_TRANSFER` whose sides are the subject wallet), `"in"` iff value
  * arrives at the subject, otherwise `"out"`; `counterparty` is the other
  * side's owning user, or `"treasury"` for the system wallet.
@@ -91,7 +91,7 @@ export function shapeHistoryEntry(
 }
 
 /**
- * Newest-first cursor-paginated history of a user wallet under §17 self-only
+ * Newest-first cursor-paginated history of a user wallet under the actor/visibility specification self-only
  * visibility. `TOKEN_ISSUANCE` never appears in a user's history: its ledger
  * movement touches only the treasury wallet, so the wallet filter excludes
  * it by construction.
@@ -105,7 +105,7 @@ export function getTransactionHistory(
 
 /**
  * Newest-first cursor-paginated treasury history — administrative treasury
- * inspection (issue #4 §10, §17): only the `admin-api` principal may express
+ * inspection (the authentication/delegation and actor/visibility specifications): only the `admin-api` principal may express
  * the call. The treasury view does include issuances.
  */
 export function getTransactionHistory(

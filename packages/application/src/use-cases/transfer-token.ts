@@ -23,11 +23,11 @@ export type TransferTokenResult = OperationAccepted & {
  * `P2P_TRANSFER` between two user wallets. The source is the actor's own
  * wallet by construction: a user actor can only move their own funds, and a
  * self-transfer is a valid net-zero movement that is still recorded
- * (issue #4 §22, economic-model §3).
+ * (the transaction-consistency specification2, the economic-transition specification).
  *
  * Runs inside the caller's already-open section so outer orchestration can
  * extend the atomic unit around it — for example the idempotency record of
- * issue #4 §12 commits in the same section as the transfer.
+ * the economic-transition specification2 commits in the same section as the transfer.
  */
 export function transferToken(
 	ctx: TransactionContext,

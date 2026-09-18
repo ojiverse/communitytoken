@@ -1,6 +1,6 @@
 /**
  * Shared machinery of the mutation use cases: actor guards and the uniform
- * evaluate-then-persist path of issue #4 §1 —
+ * evaluate-then-persist path of the economic-transition specification —
  *
  *   read current economic facts
  *   -> evaluate @communitytoken/economic-kernel
@@ -77,7 +77,7 @@ export function forbidden(detail: string): UseCaseResult<never> {
 
 /**
  * Returns a forbidden result unless `actor` is the `admin-api` service
- * principal (issue #4 §10, §13). Administrative use cases take `AdminActor`
+ * principal (the authentication/delegation and actor/visibility specifications). Administrative use cases take `AdminActor`
  * so misuse is a compile error in typed code; this guard is the runtime
  * backstop for callers that bypass the types.
  */
@@ -97,7 +97,7 @@ export function requireAdmin(
 /**
  * Narrows `actor` to a user actor or returns a forbidden result. User-facing
  * mutations derive the funding wallet from the actor: a user can only move
- * their own funds (issue #4 §13 — the actor is the resolved internal User,
+ * their own funds (the economic-transition specification3 — the actor is the resolved internal User,
  * never the calling adapter). Like `requireAdmin`, the guard is the runtime
  * backstop behind the `UserActor` parameter type.
  */
@@ -113,8 +113,8 @@ export function requireUser(
 /**
  * Evaluates `command` against `facts` and, when accepted, persists the
  * effect inside the already-open section: balance deltas, the
- * EconomicOperation (with §13 actor columns), and the LedgerTransaction,
- * all stamped with the section's frozen `now_ms` (issue #4 §8). A
+ * EconomicOperation (with the actor/visibility specification actor columns), and the LedgerTransaction,
+ * all stamped with the section's frozen `now_ms` (the temporal-authority specification). A
  * rejection persists nothing.
  */
 export function evaluateAndPersist(

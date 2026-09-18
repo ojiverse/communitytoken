@@ -18,7 +18,7 @@ export type DistributeTokenInput = {
 /**
  * `DISTRIBUTION`: moves already-issued treasury reserve to a user. Never
  * issues tokens implicitly — insufficient treasury rejects the operation
- * (issue #4 §4). Restricted to the `admin-api` principal.
+ * (the economic-transition specification). Restricted to the `admin-api` principal.
  *
  * Runs inside the caller's already-open section so outer orchestration can
  * extend the atomic unit around it.

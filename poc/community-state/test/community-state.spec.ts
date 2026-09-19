@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { CommunityState } from "../src/index";
 
 /**
- * Phase 1 §5 validation: proves that Worker -> CommunityState DO -> SQLite
+ * docs/specification/ validation: proves that Worker -> CommunityState DO -> SQLite
  * preserves the CommunityToken economic invariants without PostgreSQL
  * FOR UPDATE / triggers.
  *

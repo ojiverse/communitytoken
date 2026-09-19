@@ -258,7 +258,7 @@ function guardRepository<T extends object>(
 /**
  * An in-memory `UnitOfWork` faithful to the atomic boundary it models:
  * entering a section samples the `Clock` exactly once and freezes the value
- * as `ctx.nowMs` (issue #4 §8); `work` runs against a staging copy of the
+ * as `ctx.nowMs` (the temporal-authority specification); `work` runs against a staging copy of the
  * state that replaces the committed state only when `work` returns a
  * non-Promise result — a throw, including the runtime PromiseLike check,
  * discards the staging copy, so no observable state change survives an
@@ -298,7 +298,7 @@ export function createInMemoryUnitOfWork(
 					ledger: ledgerRepository(staging),
 				};
 				const wrapped = options?.wrapScope?.(scope) ?? scope;
-				// §8: exactly one clock sample per section, taken before any
+				// Per the temporal-authority specification: exactly one clock sample per section, taken before any
 				// caller code runs.
 				const nowMs = clock.nowMs();
 				const ctx: TransactionContext = {

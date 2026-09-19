@@ -20,8 +20,7 @@ export type PayTreasuryResult = OperationAccepted & {
 };
 
 /**
- * `TREASURY_PAYMENT`: value returning from a user to the treasury (issue #4
- * the economic-state specification). The source is the actor's own wallet by construction.
+ * `TREASURY_PAYMENT`: value returning from a user to the treasury (the economic-state specification). The source is the actor's own wallet by construction.
  *
  * Runs inside the caller's already-open section so outer orchestration can
  * extend the atomic unit around it.

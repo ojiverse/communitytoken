@@ -7,7 +7,7 @@ import type {
 } from "../src/types";
 import { ADMIN_API_PRINCIPAL, userId } from "../src/types";
 
-/** The §13 administrative actor bound to the `/admin/*` boundary in tests. */
+/** The actor/visibility specification administrative actor bound to the `/admin/*` boundary in tests. */
 export const ADMIN: AdminActor = {
 	kind: "service",
 	principalId: ADMIN_API_PRINCIPAL,
@@ -19,7 +19,7 @@ export const OTHER_SERVICE: ServiceActor = {
 	principalId: "other-service",
 };
 
-/** A system actor: reserved for scheduled/policy initiators (issue #4 §13). */
+/** A system actor: reserved for scheduled/policy initiators (the actor/visibility specification). */
 export const SYSTEM: SystemActor = { kind: "system" };
 
 /** A user actor for `rawUserId`. */

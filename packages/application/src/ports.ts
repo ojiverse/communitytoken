@@ -132,7 +132,7 @@ export interface WalletRepository {
 	 */
 	setBalance(id: WalletId, balance: number, updatedAt: number): void;
 
-	/** Returns the sum of all wallet balances — the the economic-state specification `supply(S)` fact. */
+	/** Returns the sum of all wallet balances — the economic-state specification `supply(S)` fact. */
 	totalSupply(): number;
 }
 
@@ -146,7 +146,7 @@ export type NewOperation = {
 
 /**
  * EconomicOperation records. Append is the only mutation; history queries
- * join each operation to its ledger movement (the the economic-state specification `op : L -> O`
+ * join each operation to its ledger movement (the economic-state specification `op : L -> O`
  * correspondence is a bijection in the current model).
  */
 export interface OperationRepository {
@@ -162,7 +162,7 @@ export interface OperationRepository {
 	 * `walletId` (`from_wallet_id` or `to_wallet_id` equals it), newest
 	 * first. `cursor` is the opaque continuation value from a previous call;
 	 * pass `null` for the first page. The implementation owns the cursor
-	 * encoding (production encodes the storage rowid per the transaction-consistency specification2).
+	 * encoding (production encodes the storage rowid per the persistence specification).
 	 * `nextCursor` is `null` when the result is exhausted. `limit` is a
 	 * positive page size already validated by the caller.
 	 */

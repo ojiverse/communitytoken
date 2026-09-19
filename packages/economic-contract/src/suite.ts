@@ -139,7 +139,7 @@ function genCommand(
 /**
  * Registers the storage-independent economic contract suite against one
  * implementation. Every case is derived from the formal model of
- * docs/economic-model.md §4; call this once per EconomicHarness adapter.
+ * the economic-state specification; call this once per EconomicHarness adapter.
  */
 export function defineEconomicContract(
 	name: string,

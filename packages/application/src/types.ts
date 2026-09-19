@@ -2,7 +2,7 @@
  * Domain types of the application layer for the Phase 2 CommunityToken
  * service (see docs/specification/README.md). These types are provider- and runtime-independent:
  * they name internal identities and application records, never external
- * provider identifiers or platform types (the transaction-consistency specification, §11).
+ * provider identifiers or platform types (the transaction-consistency and authentication/delegation specifications).
  */
 
 import type {
@@ -31,7 +31,7 @@ export type UserId = Brand<string, "UserId">;
 
 /**
  * Brands/rehydrates a persisted internal User identifier as `UserId`.
- * Creation/allocation belongs to the persistence boundary (the transaction-consistency specification2).
+ * Creation/allocation belongs to the persistence boundary (the persistence specification).
  */
 export function userId(raw: string): UserId {
 	return raw as UserId;
@@ -68,7 +68,7 @@ export function ledgerId(raw: string): LedgerId {
  * Rehydration of persisted identifiers: brands raw storage strings as
  * opaque ids. This is the visible unsafe boundary — only persistence
  * adapters and test support may turn an arbitrary string into an internal
- * id; the application API consumes already-branded values (the transaction-consistency specification2).
+ * id; the application API consumes already-branded values (the persistence specification).
  */
 export const rehydrate = {
 	userId,
@@ -77,24 +77,24 @@ export const rehydrate = {
 	ledgerId,
 } as const;
 
-/** The `actor_kind` values persisted on `economic_operations` (the economic-transition specification3). */
+/** The `actor_kind` values persisted on `economic_operations` (the actor/visibility specification). */
 export type ActorKind = "user" | "service" | "system";
 
 /**
- * The administrative service principal of the economic-transition specification3: the only actor
+ * The administrative service principal of the actor/visibility specification: the only actor
  * permitted to run `TOKEN_ISSUANCE` and `DISTRIBUTION`. Bound at the
  * `/admin/*` boundary; other service principals (e.g. `discord-adapter`)
  * are not administrative.
  */
 export const ADMIN_API_PRINCIPAL = "admin-api";
 
-/** A resolved internal User acting on their own wallet (the economic-transition specification3). */
+/** A resolved internal User acting on their own wallet (the actor/visibility specification). */
 export type UserActor = {
 	readonly kind: "user";
 	readonly userId: UserId;
 };
 
-/** A trusted service principal identified by its credential id (the economic-transition specification3). */
+/** A trusted service principal identified by its credential id (the actor/visibility specification). */
 export type ServiceActor = {
 	readonly kind: "service";
 	readonly principalId: string;
@@ -109,7 +109,7 @@ export type AdminActor = ServiceActor & {
 	readonly principalId: typeof ADMIN_API_PRINCIPAL;
 };
 
-/** A scheduled/policy initiator; carries no identifier (the economic-transition specification3). */
+/** A scheduled/policy initiator; carries no identifier (the actor/visibility specification). */
 export type SystemActor = {
 	readonly kind: "system";
 };
@@ -117,7 +117,7 @@ export type SystemActor = {
 /**
  * Who initiated a use case: application/audit context attached to the
  * persisted EconomicOperation. The actor is never an input to the economic
- * evaluator and is distinct from the funding wallet (the economic-transition specification3). The
+ * evaluator and is distinct from the funding wallet (the actor/visibility specification). The
  * union encodes the storage CHECK at compile time: `user` and `service`
  * actors carry an identifier, `system` carries none.
  */
@@ -134,7 +134,7 @@ export type PersistedActor =
 	| { readonly actorKind: "system"; readonly actorId: null };
 
 /**
- * Projects an `Actor` onto its the actor/visibility specification persisted columns. Repositories call
+ * Projects an `Actor` onto the actor/visibility specification persisted columns. Repositories call
  * this when storing an `EconomicOperation`; there is no reverse — stored
  * columns never rehydrate into an `Actor`.
  */
@@ -176,7 +176,7 @@ export type TreasuryWalletSelector = { readonly type: "treasury" };
 
 /**
  * Selects the wallet owned by a user. User reads are self-only: use cases
- * pair this selector with the matching `UserActor` (the economic-transition specification7).
+ * pair this selector with the matching `UserActor` (the actor/visibility specification).
  */
 export type UserWalletSelector = {
 	readonly type: "user";
@@ -184,7 +184,7 @@ export type UserWalletSelector = {
 };
 
 /**
- * Selects the wallet a read targets (the economic-transition specification7). The tagged union keeps
+ * Selects the wallet a read targets (the actor/visibility specification). The tagged union keeps
  * the treasury in its own namespace: an opaque user id can never alias it,
  * and each variant binds to the actor type allowed to read it.
  */
@@ -224,7 +224,7 @@ export type UserWallet = WalletBase & {
  */
 export type Wallet = SystemWallet | UserWallet;
 
-/** A persisted EconomicOperation, including its the actor/visibility specification actor columns. */
+/** A persisted EconomicOperation, including the actor/visibility specification actor columns. */
 export type OperationRecord = {
 	readonly id: OperationId;
 	readonly kind: OperationKind;
@@ -245,7 +245,7 @@ export type LedgerRecord = {
 /**
  * The operation+ledger join row a repository returns for history queries,
  * before requester-relative shaping. Owner ids are included for both
- * movement sides so the use case can derive `counterparty` (the transaction-consistency specification2).
+ * movement sides so the use case can derive `counterparty` (the persistence specification).
  */
 export type HistoryRow = {
 	readonly id: OperationId;
@@ -260,7 +260,7 @@ export type HistoryRow = {
 } & PersistedActor;
 
 /**
- * Movement direction relative to the requesting wallet (the transaction-consistency specification2):
+ * Movement direction relative to the requesting wallet (the actor/visibility specification):
  * `"in"` when value arrives, `"out"` when it leaves, `"self"` for a
  * self-movement whose net balance delta is zero (a `P2P_TRANSFER` whose
  * source and destination are the same wallet). A `TOKEN_ISSUANCE` ledger
@@ -270,7 +270,7 @@ export type HistoryRow = {
 export type HistoryDirection = "in" | "out" | "self";
 
 /**
- * One entry of a user's or the treasury's operation history (the economic-transition specification7,
+ * One entry of a user's or the treasury's operation history (the actor/visibility specification,
  * the persistence specification). `counterparty` is `"treasury"` for a system-side movement, otherwise
  * the internal User id owning the other wallet; for a self-transfer it is
  * the requesting user themself.
@@ -290,7 +290,7 @@ export type HistoryEntry = {
 /**
  * One page of a cursor-paginated result. `nextCursor` is an opaque
  * continuation value owned by the repository implementation; it is `null`
- * when the result is exhausted (the economic-transition specification7).
+ * when the result is exhausted (the actor/visibility specification).
  */
 export type Page<T> = {
 	readonly entries: readonly T[];

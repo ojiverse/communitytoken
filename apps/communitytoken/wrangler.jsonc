@@ -1,0 +1,19 @@
+{
+	"name": "communitytoken",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-09-08",
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "COMMUNITY_STATE",
+				"class_name": "CommunityState"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["CommunityState"]
+		}
+	]
+}

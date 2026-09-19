@@ -68,14 +68,23 @@ describe("production economic path", () => {
 
 	it("rejects a duplicate createUser and keeps exactly one wallet", async () => {
 		const s = freshStub();
-		await s.createUser("alice");
-		await expect(s.createUser("alice")).rejects.toThrow();
+		expect(await s.createUser("alice")).toEqual({ ok: true });
+		// Expected duplicates surface as a result value, not an RPC rejection,
+		// so no remote unhandled rejection is produced in the test pool.
+		const duplicate = await s.createUser("alice");
+		expect(duplicate.ok).toBe(false);
 
 		const balance = await s.getBalance(
 			userActor("alice"),
 			userSelector(rehydrate.userId("alice")),
 		);
 		expect(balance).toEqual({ ok: true, value: { balance: 0 } });
+		await runInDurableObject(s, async (_i, state) => {
+			const row = state.storage.sql
+				.exec("SELECT COUNT(*) AS n FROM wallets WHERE owner_user_id = 'alice'")
+				.one();
+			expect(row["n"]).toBe(1);
+		});
 	});
 
 	it("composes kernel evaluation through the six use-case methods", async () => {
@@ -159,6 +168,156 @@ describe("production economic path", () => {
 				},
 			});
 		}
+	});
+});
+
+describe("schema monetary domain enforcement", () => {
+	const MAX = Number.MAX_SAFE_INTEGER;
+
+	/**
+	 * Inserts a bare operation row via direct SQL so ledger-domain tests can
+	 * attach movements to it; each call allocates a fresh operation id.
+	 */
+	async function insertOperation(
+		s: DurableObjectStub<CommunityState>,
+	): Promise<string> {
+		const id = crypto.randomUUID();
+		await runInDurableObject(s, async (_i, state) => {
+			state.storage.sql.exec(
+				"INSERT INTO economic_operations (id, kind, metadata, actor_kind, actor_id, created_at) VALUES (?, 'TOKEN_ISSUANCE', NULL, 'service', 'admin-api', 1)",
+				id,
+			);
+		});
+		return id;
+	}
+
+	it("stores the maximum wallet balance and round-trips it exactly", async () => {
+		const s = freshStub();
+		await runInDurableObject(s, async (_i, state) => {
+			state.storage.sql.exec(
+				"UPDATE wallets SET balance = ?, updated_at = 1 WHERE id = 'treasury'",
+				MAX,
+			);
+			const row = state.storage.sql
+				.exec("SELECT balance FROM wallets WHERE id = 'treasury'")
+				.one();
+			expect(row["balance"]).toBe(MAX);
+		});
+	});
+
+	it("rejects out-of-domain balances at the DB boundary, not just in code", async () => {
+		const s = freshStub();
+		for (const balance of [MAX + 1, -1, 1.5]) {
+			await expect(
+				runInDurableObject(s, async (_i, state) => {
+					state.storage.sql.exec(
+						"UPDATE wallets SET balance = ? WHERE id = 'treasury'",
+						balance,
+					);
+				}),
+			).rejects.toThrow();
+		}
+		await runInDurableObject(s, async (_i, state) => {
+			const row = state.storage.sql
+				.exec("SELECT balance FROM wallets WHERE id = 'treasury'")
+				.one();
+			expect(row["balance"]).toBe(0);
+		});
+	});
+
+	it("stores the maximum ledger amount and round-trips it exactly", async () => {
+		const s = freshStub();
+		const operationId = await insertOperation(s);
+		await runInDurableObject(s, async (_i, state) => {
+			state.storage.sql.exec(
+				"INSERT INTO ledger_transactions (id, operation_id, from_wallet_id, to_wallet_id, amount, created_at) VALUES (?, ?, 'treasury', 'treasury', ?, 1)",
+				crypto.randomUUID(),
+				operationId,
+				MAX,
+			);
+			const row = state.storage.sql
+				.exec(
+					"SELECT amount FROM ledger_transactions WHERE operation_id = ?",
+					operationId,
+				)
+				.one();
+			expect(row["amount"]).toBe(MAX);
+		});
+	});
+
+	it("rejects out-of-domain ledger amounts at the DB boundary", async () => {
+		const s = freshStub();
+		for (const amount of [MAX + 1, 0, -3, 2.5]) {
+			const operationId = await insertOperation(s);
+			await expect(
+				runInDurableObject(s, async (_i, state) => {
+					state.storage.sql.exec(
+						"INSERT INTO ledger_transactions (id, operation_id, from_wallet_id, to_wallet_id, amount, created_at) VALUES (?, ?, 'treasury', 'treasury', ?, 1)",
+						crypto.randomUUID(),
+						operationId,
+						amount,
+					);
+				}),
+			).rejects.toThrow();
+		}
+	});
+});
+
+describe("schema structural invariants", () => {
+	it("seeds exactly one system wallet named 'treasury'", async () => {
+		const s = freshStub();
+		await runInDurableObject(s, async (_i, state) => {
+			const systems = state.storage.sql
+				.exec("SELECT id, kind FROM wallets WHERE kind = 'system'")
+				.toArray();
+			expect(systems).toEqual([{ id: "treasury", kind: "system" }]);
+		});
+	});
+
+	it("rejects a second system wallet and treasury-id mismatches", async () => {
+		const s = freshStub();
+		// kind = 'system' AND id != 'treasury'
+		await expect(
+			runInDurableObject(s, async (_i, state) => {
+				state.storage.sql.exec(
+					"INSERT INTO wallets (id, kind, owner_user_id, balance, created_at, updated_at) VALUES ('other', 'system', NULL, 0, 1, 1)",
+				);
+			}),
+		).rejects.toThrow();
+		// id = 'treasury' AND kind != 'system'
+		await s.createUser("alice");
+		await expect(
+			runInDurableObject(s, async (_i, state) => {
+				state.storage.sql.exec(
+					"INSERT INTO wallets (id, kind, owner_user_id, balance, created_at, updated_at) VALUES ('treasury', 'user', 'alice', 0, 1, 1)",
+				);
+			}),
+		).rejects.toThrow();
+	});
+
+	it("enforces one ledger row per economic operation", async () => {
+		const s = freshStub();
+		const operationId = crypto.randomUUID();
+		await runInDurableObject(s, async (_i, state) => {
+			state.storage.sql.exec(
+				"INSERT INTO economic_operations (id, kind, metadata, actor_kind, actor_id, created_at) VALUES (?, 'DISTRIBUTION', NULL, 'service', 'admin-api', 1)",
+				operationId,
+			);
+			state.storage.sql.exec(
+				"INSERT INTO ledger_transactions (id, operation_id, from_wallet_id, to_wallet_id, amount, created_at) VALUES (?, ?, 'treasury', 'treasury', 5, 1)",
+				crypto.randomUUID(),
+				operationId,
+			);
+		});
+		await expect(
+			runInDurableObject(s, async (_i, state) => {
+				state.storage.sql.exec(
+					"INSERT INTO ledger_transactions (id, operation_id, from_wallet_id, to_wallet_id, amount, created_at) VALUES (?, ?, 'treasury', 'treasury', 7, 1)",
+					crypto.randomUUID(),
+					operationId,
+				);
+			}),
+		).rejects.toThrow();
 	});
 });
 
@@ -300,13 +459,11 @@ describe("production UnitOfWork", () => {
 			const uow = createStorageUnitOfWork(state.storage, {
 				nowMs: () => 1,
 			});
-			let escaped: TransactionContext | undefined;
 			let escapedWallets: TransactionContext["wallets"] | undefined;
 			uow.transact((ctx) => {
-				escaped = ctx;
 				escapedWallets = ctx.wallets;
 			});
-			expect(escaped).toBeDefined();
+			expect(escapedWallets).toBeDefined();
 			expect(() => escapedWallets?.totalSupply()).toThrow(/closed/);
 			// A later open section never revives the stale handle.
 			uow.transact(() => {
@@ -314,6 +471,39 @@ describe("production UnitOfWork", () => {
 					/closed/,
 				);
 			});
+		});
+	});
+
+	it("permanently revokes the TransactionContext itself at section close", async () => {
+		const s = freshStub();
+		await runInDurableObject(s, async (_i, state) => {
+			const uow = createStorageUnitOfWork(state.storage, {
+				nowMs: () => 1,
+			});
+
+			const expectRevoked = (ctx: TransactionContext) => {
+				expect(() => ctx.nowMs).toThrow(/closed/);
+				expect(() => ctx.wallets).toThrow(/closed/);
+				expect(() => ctx.operations).toThrow(/closed/);
+				expect(() => ctx.ledger).toThrow(/closed/);
+			};
+
+			// Committed section: every context property read is dead afterward.
+			let committed: TransactionContext | undefined;
+			uow.transact((ctx) => {
+				committed = ctx;
+			});
+			expectRevoked(committed as TransactionContext);
+
+			// Rolled-back section: revocation is identical.
+			let aborted: TransactionContext | undefined;
+			expect(() =>
+				uow.transact((ctx) => {
+					aborted = ctx;
+					throw new Error("boom");
+				}),
+			).toThrow("boom");
+			expectRevoked(aborted as TransactionContext);
 		});
 	});
 

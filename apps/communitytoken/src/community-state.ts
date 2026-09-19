@@ -48,6 +48,16 @@ export type LedgerRow = {
 };
 
 /**
+ * Result of the test-support user registration. A duplicate is an expected
+ * failure and surfaces as a returned value, not a thrown RPC rejection —
+ * matching the UseCaseResult convention and keeping expected failures from
+ * surfacing as remote unhandled rejections in the test pool.
+ */
+export type CreateUserResult =
+	| { readonly ok: true }
+	| { readonly ok: false; readonly error: string };
+
+/**
  * The production CommunityState Durable Object (issue #4 PR-2): the single
  * serialization authority for one community's durable economic state.
  * The deployment dereferences exactly one instance via
@@ -173,10 +183,18 @@ export class CommunityState extends DurableObject {
 	 * transaction (the FK order workerd enforces). The suite-supplied id
 	 * is stored verbatim — caller-supplied test input, not a relaxation
 	 * of production `crypto.randomUUID()` id generation — while the
-	 * seeded wallet id is a fresh UUID.
+	 * seeded wallet id is a fresh UUID. A duplicate id returns
+	 * `{ ok: false }` from inside the same serialized section rather
+	 * than relying on a constraint exception crossing the RPC boundary.
 	 */
-	createUser(rawUserId: string): void {
-		this.ctx.storage.transactionSync(() => {
+	createUser(rawUserId: string): CreateUserResult {
+		return this.ctx.storage.transactionSync(() => {
+			const existing = this.ctx.storage.sql
+				.exec("SELECT id FROM users WHERE id = ?", rawUserId)
+				.toArray();
+			if (existing.length > 0) {
+				return { ok: false, error: `user already exists: ${rawUserId}` };
+			}
 			const t = this.clock.nowMs();
 			this.ctx.storage.sql.exec(
 				"INSERT INTO users (id, created_at) VALUES (?, ?)",
@@ -190,6 +208,7 @@ export class CommunityState extends DurableObject {
 				t,
 				t,
 			);
+			return { ok: true };
 		});
 	}
 

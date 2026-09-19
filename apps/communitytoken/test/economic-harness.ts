@@ -73,7 +73,13 @@ export function createProductionHarness(
 		},
 
 		async createUser(userId: string) {
-			await stub.createUser(userId);
+			const result = await stub.createUser(userId);
+			// The suite expects duplicates to reject; the RPC returns the
+			// failure as a value, so the adapter re-throws it locally — no
+			// remote unhandled rejection crosses the DO boundary.
+			if (!result.ok) {
+				throw new Error(result.error);
+			}
 		},
 
 		async apply(command: HarnessCommand): Promise<HarnessResult> {

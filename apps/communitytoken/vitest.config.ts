@@ -7,12 +7,7 @@ export default defineConfig({
 			wrangler: { configPath: "./wrangler.jsonc" },
 		}),
 	],
-	test: {
-		// Expected-failure RPC calls (insufficient balance, direction
-		// violations, …) surface twice: the awaited promise rejects inside the
-		// test (caught by expect().rejects) and workerd additionally reports an
-		// "uncaught (in promise)" error from the DO side. The assertions still
-		// verify the domain behavior; the extra report is pipeline noise.
-		dangerouslyIgnoreUnhandledErrors: true,
-	},
+	// No `dangerouslyIgnoreUnhandledErrors`: expected-failure RPCs return
+	// result values instead of rejecting across the DO boundary, so any
+	// unhandled error reported here is a real defect and must fail the run.
 });

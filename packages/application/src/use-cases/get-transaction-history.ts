@@ -20,7 +20,7 @@ import { forbidden, requireAdmin, TREASURY_ID } from "./shared";
 export type HistoryRequest = {
 	readonly cursor?: string | null;
 	/**
-	 * Page size: an integer in `1..100`, default 50 (the economic-transition specification7). Values
+	 * Page size: an integer in `1..100`, default 50 (the actor/visibility specification). Values
 	 * outside the contract are an `invalid-input` failure, never clamped.
 	 */
 	readonly limit?: number;
@@ -30,7 +30,7 @@ const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
 
 /**
- * Validates `limit` against the the actor/visibility specification contract: an integer in `1..100`,
+ * Validates `limit` against the actor/visibility specification contract: an integer in `1..100`,
  * defaulting to 50. Out-of-contract values are an `invalid-input` failure —
  * the boundary owns rejecting malformed requests, and this layer does not
  * silently normalize caller input.
@@ -50,8 +50,7 @@ export function historyLimit(
 }
 
 /**
- * Shapes a join row into the requester-relative history entry of issue #4
- * the persistence specification: `direction` is `"self"` for a net-zero self-movement (a
+ * Shapes a join row into the requester-relative history entry of the actor/visibility specification: `direction` is `"self"` for a net-zero self-movement (a
  * `P2P_TRANSFER` whose sides are the subject wallet), `"in"` iff value
  * arrives at the subject, otherwise `"out"`; `counterparty` is the other
  * side's owning user, or `"treasury"` for the system wallet.

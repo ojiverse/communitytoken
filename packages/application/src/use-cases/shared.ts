@@ -97,7 +97,7 @@ export function requireAdmin(
 /**
  * Narrows `actor` to a user actor or returns a forbidden result. User-facing
  * mutations derive the funding wallet from the actor: a user can only move
- * their own funds (the economic-transition specification3 — the actor is the resolved internal User,
+ * their own funds (the actor/visibility specification — the actor is the resolved internal User,
  * never the calling adapter). Like `requireAdmin`, the guard is the runtime
  * backstop behind the `UserActor` parameter type.
  */

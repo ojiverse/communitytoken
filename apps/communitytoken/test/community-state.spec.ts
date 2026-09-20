@@ -174,22 +174,10 @@ describe("production economic path", () => {
 describe("schema monetary domain enforcement", () => {
 	const MAX = Number.MAX_SAFE_INTEGER;
 
-	/**
-	 * Inserts a bare operation row via direct SQL so ledger-domain tests can
-	 * attach movements to it; each call allocates a fresh operation id.
-	 */
-	async function insertOperation(
-		s: DurableObjectStub<CommunityState>,
-	): Promise<string> {
-		const id = crypto.randomUUID();
-		await runInDurableObject(s, async (_i, state) => {
-			state.storage.sql.exec(
-				"INSERT INTO economic_operations (id, kind, metadata, actor_kind, actor_id, created_at) VALUES (?, 'TOKEN_ISSUANCE', NULL, 'service', 'admin-api', 1)",
-				id,
-			);
-		});
-		return id;
-	}
+	const INSERT_OP =
+		"INSERT INTO economic_operations (id, kind, metadata, actor_kind, actor_id, created_at) VALUES (?, 'TOKEN_ISSUANCE', NULL, 'service', 'admin-api', 1)";
+	const INSERT_LEDGER =
+		"INSERT INTO ledger_transactions (id, operation_id, from_wallet_id, to_wallet_id, amount, created_at) VALUES (?, ?, 'treasury', 'treasury', ?, 1)";
 
 	it("stores the maximum wallet balance and round-trips it exactly", async () => {
 		const s = freshStub();
@@ -227,14 +215,19 @@ describe("schema monetary domain enforcement", () => {
 
 	it("stores the maximum ledger amount and round-trips it exactly", async () => {
 		const s = freshStub();
-		const operationId = await insertOperation(s);
+		const operationId = crypto.randomUUID();
 		await runInDurableObject(s, async (_i, state) => {
-			state.storage.sql.exec(
-				"INSERT INTO ledger_transactions (id, operation_id, from_wallet_id, to_wallet_id, amount, created_at) VALUES (?, ?, 'treasury', 'treasury', ?, 1)",
-				crypto.randomUUID(),
-				operationId,
-				MAX,
-			);
+			// Operation and ledger pair must commit inside one transaction:
+			// the reciprocal deferred FKs admit neither side alone.
+			state.storage.transactionSync(() => {
+				state.storage.sql.exec(INSERT_OP, operationId);
+				state.storage.sql.exec(
+					INSERT_LEDGER,
+					crypto.randomUUID(),
+					operationId,
+					MAX,
+				);
+			});
 			const row = state.storage.sql
 				.exec(
 					"SELECT amount FROM ledger_transactions WHERE operation_id = ?",
@@ -245,20 +238,33 @@ describe("schema monetary domain enforcement", () => {
 		});
 	});
 
-	it("rejects out-of-domain ledger amounts at the DB boundary", async () => {
+	it("rejects out-of-domain ledger amounts at the DB boundary and rolls the pair back", async () => {
 		const s = freshStub();
 		for (const amount of [MAX + 1, 0, -3, 2.5]) {
-			const operationId = await insertOperation(s);
+			const operationId = crypto.randomUUID();
 			await expect(
 				runInDurableObject(s, async (_i, state) => {
-					state.storage.sql.exec(
-						"INSERT INTO ledger_transactions (id, operation_id, from_wallet_id, to_wallet_id, amount, created_at) VALUES (?, ?, 'treasury', 'treasury', ?, 1)",
-						crypto.randomUUID(),
-						operationId,
-						amount,
-					);
+					state.storage.transactionSync(() => {
+						state.storage.sql.exec(INSERT_OP, operationId);
+						state.storage.sql.exec(
+							INSERT_LEDGER,
+							crypto.randomUUID(),
+							operationId,
+							amount,
+						);
+					});
 				}),
 			).rejects.toThrow();
+			// The failed pair leaves no orphan operation behind.
+			await runInDurableObject(s, async (_i, state) => {
+				const row = state.storage.sql
+					.exec(
+						"SELECT COUNT(*) AS n FROM economic_operations WHERE id = ?",
+						operationId,
+					)
+					.one();
+				expect(row["n"]).toBe(0);
+			});
 		}
 	});
 });
@@ -299,15 +305,17 @@ describe("schema structural invariants", () => {
 		const s = freshStub();
 		const operationId = crypto.randomUUID();
 		await runInDurableObject(s, async (_i, state) => {
-			state.storage.sql.exec(
-				"INSERT INTO economic_operations (id, kind, metadata, actor_kind, actor_id, created_at) VALUES (?, 'DISTRIBUTION', NULL, 'service', 'admin-api', 1)",
-				operationId,
-			);
-			state.storage.sql.exec(
-				"INSERT INTO ledger_transactions (id, operation_id, from_wallet_id, to_wallet_id, amount, created_at) VALUES (?, ?, 'treasury', 'treasury', 5, 1)",
-				crypto.randomUUID(),
-				operationId,
-			);
+			state.storage.transactionSync(() => {
+				state.storage.sql.exec(
+					"INSERT INTO economic_operations (id, kind, metadata, actor_kind, actor_id, created_at) VALUES (?, 'DISTRIBUTION', NULL, 'service', 'admin-api', 1)",
+					operationId,
+				);
+				state.storage.sql.exec(
+					"INSERT INTO ledger_transactions (id, operation_id, from_wallet_id, to_wallet_id, amount, created_at) VALUES (?, ?, 'treasury', 'treasury', 5, 1)",
+					crypto.randomUUID(),
+					operationId,
+				);
+			});
 		});
 		await expect(
 			runInDurableObject(s, async (_i, state) => {
@@ -318,6 +326,104 @@ describe("schema structural invariants", () => {
 				);
 			}),
 		).rejects.toThrow();
+	});
+
+	it("rejects deleting the treasury wallet but still allows balance updates", async () => {
+		const s = freshStub();
+		await expect(
+			runInDurableObject(s, async (_i, state) => {
+				state.storage.sql.exec("DELETE FROM wallets WHERE id = 'treasury'");
+			}),
+		).rejects.toThrow();
+		// balance / updated_at remain mutable on the treasury row.
+		await runInDurableObject(s, async (_i, state) => {
+			state.storage.sql.exec(
+				"UPDATE wallets SET balance = 42, updated_at = 9 WHERE id = 'treasury'",
+			);
+			const row = state.storage.sql
+				.exec("SELECT balance, updated_at FROM wallets WHERE id = 'treasury'")
+				.one();
+			expect(row["balance"]).toBe(42);
+			expect(row["updated_at"]).toBe(9);
+		});
+	});
+
+	it("rejects converting the treasury row into a user wallet", async () => {
+		const s = freshStub();
+		await s.createUser("alice");
+		await expect(
+			runInDurableObject(s, async (_i, state) => {
+				state.storage.sql.exec(
+					"UPDATE wallets SET id = 'hijacked', kind = 'user', owner_user_id = 'alice' WHERE id = 'treasury'",
+				);
+			}),
+		).rejects.toThrow();
+		// The deployment still has its one system wallet named treasury.
+		await runInDurableObject(s, async (_i, state) => {
+			const systems = state.storage.sql
+				.exec("SELECT id, kind FROM wallets WHERE kind = 'system'")
+				.toArray();
+			expect(systems).toEqual([{ id: "treasury", kind: "system" }]);
+		});
+	});
+});
+
+describe("operation-ledger exact 1:1 at commit", () => {
+	const INSERT_OP =
+		"INSERT INTO economic_operations (id, kind, metadata, actor_kind, actor_id, created_at) VALUES (?, 'TOKEN_ISSUANCE', NULL, 'service', 'admin-api', 1)";
+
+	/**
+	 * In workerd a deferred-FK violation surfaces at the output-gate commit:
+	 * the DO is reset and rolled back to its last durable state, and the
+	 * same stub stays poisoned — so verification re-opens the same DO id on
+	 * a fresh stub and confirms the rolled-back state contains no orphan.
+	 */
+	function stubFor(name: string): DurableObjectStub<CommunityState> {
+		const id = env.COMMUNITY_STATE.idFromName(name);
+		return env.COMMUNITY_STATE.get(id) as DurableObjectStub<CommunityState>;
+	}
+
+	it("fails a transaction that commits an EconomicOperation without its ledger", async () => {
+		const name = crypto.randomUUID();
+		const operationId = crypto.randomUUID();
+		await expect(
+			runInDurableObject(stubFor(name), async (_i, state) => {
+				state.storage.transactionSync(() => {
+					state.storage.sql.exec(INSERT_OP, operationId);
+				});
+			}),
+		).rejects.toThrow(/FOREIGN KEY|reset/);
+		await runInDurableObject(stubFor(name), async (_i, state) => {
+			const row = state.storage.sql
+				.exec(
+					"SELECT COUNT(*) AS n FROM economic_operations WHERE id = ?",
+					operationId,
+				)
+				.one();
+			expect(row["n"]).toBe(0);
+		});
+	});
+
+	it("fails a transaction that commits a LedgerTransaction without its operation", async () => {
+		const name = crypto.randomUUID();
+		const operationId = crypto.randomUUID();
+		await expect(
+			runInDurableObject(stubFor(name), async (_i, state) => {
+				state.storage.transactionSync(() => {
+					state.storage.sql.exec(
+						"INSERT INTO ledger_transactions (id, operation_id, from_wallet_id, to_wallet_id, amount, created_at) VALUES (?, ?, 'treasury', 'treasury', 5, 1)",
+						crypto.randomUUID(),
+						operationId,
+					);
+				});
+			}),
+		).rejects.toThrow(/FOREIGN KEY|reset/);
+		await runInDurableObject(stubFor(name), async (_i, state) => {
+			const row = state.storage.sql
+				.exec("SELECT COUNT(*) AS n FROM ledger_transactions")
+				.one();
+			expect(row["n"]).toBe(0);
+		});
 	});
 });
 

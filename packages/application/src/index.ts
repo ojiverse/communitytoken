@@ -5,6 +5,8 @@ export type {
 export { createCommunityTokenApplication } from "./application";
 export type {
 	Clock,
+	IdempotencyRepository,
+	IdentityBindingRepository,
 	LedgerRepository,
 	NewLedgerEntry,
 	NewOperation,
@@ -24,6 +26,7 @@ export type {
 	HistoryDirection,
 	HistoryEntry,
 	HistoryRow,
+	IdempotencyRecord,
 	InvalidInputError,
 	LedgerId,
 	LedgerRecord,
@@ -67,6 +70,12 @@ export {
 	type DistributeTokenInput,
 	distributeToken,
 } from "./use-cases/distribute-token";
+export {
+	executeIdempotent,
+	type IdempotencyKeyInfo,
+	type IdempotentExecution,
+	type IdempotentOutcome,
+} from "./use-cases/execute-idempotent";
 export { type BalanceResult, getBalance } from "./use-cases/get-balance";
 export {
 	getTransactionHistory,

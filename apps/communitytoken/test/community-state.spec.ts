@@ -14,14 +14,17 @@ import {
 	userSelector,
 } from "@communitytoken/application";
 import { describe, expect, it } from "vitest";
+import type { ServicePrincipal } from "../src/auth";
 import type { CommunityState } from "../src/index";
 import { createStorageUnitOfWork } from "../src/unit-of-work";
 
 /**
- * PR-2 integration coverage for the production CommunityState Durable
- * Object: serialization, atomic rollback, storage-level append-only,
- * eviction survival, safe-integer storage, and the production
- * UnitOfWork's context lifetime / synchronous-section behavior.
+ * Integration coverage for the production CommunityState Durable Object:
+ * serialization, atomic rollback, storage-level append-only, eviction
+ * survival, safe-integer storage, the production UnitOfWork's context
+ * lifetime / synchronous-section behavior (PR-2), and the PR-3 additions —
+ * route-facing methods, `createBoundUser`, and the identity-binding /
+ * idempotency tables.
  *
  * Each test uses a freshly-named DO id so tests are isolated without any
  * shared storage.
@@ -39,18 +42,19 @@ function userActor(rawUserId: string): UserActor {
 }
 
 describe("worker fetch surface", () => {
-	it("returns 404 for every request — no routes exist in PR-2", async () => {
-		for (const path of [
-			"/",
-			"/health",
-			"/internal/balance",
-			"/admin/issuances",
-		]) {
+	it("404s unowned paths and 401s unauthenticated owned routes", async () => {
+		for (const path of ["/", "/health", "/internal/registration-intents"]) {
 			const response = await SELF.fetch(`https://token.ojiver.se${path}`, {
 				method: "POST",
 			});
 			expect(response.status).toBe(404);
 		}
+		// An owned route with no credential: route match succeeded and
+		// authentication rejects before the handler runs.
+		const owned = await SELF.fetch("https://token.ojiver.se/internal/balance", {
+			method: "POST",
+		});
+		expect(owned.status).toBe(401);
 	});
 });
 
@@ -592,6 +596,8 @@ describe("production UnitOfWork", () => {
 				expect(() => ctx.wallets).toThrow(/closed/);
 				expect(() => ctx.operations).toThrow(/closed/);
 				expect(() => ctx.ledger).toThrow(/closed/);
+				expect(() => ctx.identityBindings).toThrow(/closed/);
+				expect(() => ctx.idempotencyRecords).toThrow(/closed/);
 			};
 
 			// Committed section: every context property read is dead afterward.
@@ -737,5 +743,208 @@ describe("harness actor persistence", () => {
 			actor_kind: "user",
 			actor_id: "alice",
 		});
+	});
+});
+
+describe("route-facing methods (PR-3)", () => {
+	const DISCORD = "discord-adapter";
+	const ADMIN_PRINCIPAL = "admin-api";
+
+	function idempotency(
+		label: string,
+		fingerprint: string = `fp-${label}`,
+	): { key: string; fingerprintVersion: string; requestFingerprint: string } {
+		return {
+			key: label,
+			fingerprintVersion: "v1",
+			requestFingerprint: fingerprint,
+		};
+	}
+
+	it("backstops the route-group principal inside the object — never a credential", async () => {
+		const s = freshStub();
+		// The DO accepts an asserted principal, never bearer bytes: a raw
+		// credential string is simply an unknown principal and is denied.
+		for (const notPrincipal of [ADMIN_PRINCIPAL, "Bearer abc", ""]) {
+			const denied = await runInDurableObject(s, async (i) =>
+				i.internalBalance(notPrincipal as ServicePrincipal, {
+					issuer: "i",
+					subject: "s",
+				}),
+			);
+			expect(denied.status).toBe(403);
+		}
+		for (const notAdmin of [DISCORD, "Bearer abc"]) {
+			const denied = await runInDurableObject(s, async (i) =>
+				i.adminIssue(notAdmin as ServicePrincipal, { amount: 5 }),
+			);
+			expect(denied.status).toBe(403);
+		}
+	});
+
+	it("createBoundUser seeds user, wallet, and binding atomically", async () => {
+		const s = freshStub();
+		expect(await s.createBoundUser("alice", "iss", "sub")).toEqual({
+			ok: true,
+		});
+		// The binding resolves inside the route method's section.
+		const response = await runInDurableObject(s, async (i) =>
+			i.internalBalance(DISCORD, { issuer: "iss", subject: "sub" }),
+		);
+		expect(response).toEqual({ status: 200, body: { balance: 0 } });
+		// Exact match: no normalization on either component.
+		const missed = await runInDurableObject(s, async (i) =>
+			i.internalBalance(DISCORD, { issuer: "iss", subject: "SUB" }),
+		);
+		expect(missed.status).toBe(404);
+	});
+
+	it("returns duplicate createBoundUser conflicts as values", async () => {
+		const s = freshStub();
+		await s.createUser("carol");
+		expect(await s.createBoundUser("carol", "i1", "s1")).toMatchObject({
+			ok: false,
+		});
+		await s.createBoundUser("dave", "i2", "s2");
+		expect(await s.createBoundUser("erin", "i2", "s2")).toMatchObject({
+			ok: false,
+		});
+	});
+
+	it("internalTransfer resolves both identities and commits mutation + record in one section", async () => {
+		const s = freshStub();
+		await s.createBoundUser("alice", "iss", "a-sub");
+		await s.createBoundUser("bob", "iss", "b-sub");
+		await s.issueToken(ADMIN, { amount: 50 });
+		await s.distributeToken(ADMIN, {
+			toUserId: rehydrate.userId("alice"),
+			amount: 50,
+		});
+
+		const input = {
+			from: { issuer: "iss", subject: "a-sub" },
+			to: { issuer: "iss", subject: "b-sub" },
+			amount: 20,
+		};
+		const first = await runInDurableObject(s, async (i) =>
+			i.internalTransfer(DISCORD, idempotency("k1"), input),
+		);
+		expect(first.status).toBe(200);
+		expect(first.body).toMatchObject({ from_balance: 30 });
+
+		// The resolved internal user is the persisted actor — resolution
+		// happened inside the mutation's serialized section, not before.
+		const ops = await s.listOperations();
+		expect(ops.at(-1)).toMatchObject({
+			kind: "P2P_TRANSFER",
+			actor_kind: "user",
+			actor_id: "alice",
+		});
+
+		// The replay record committed atomically with the mutation.
+		await runInDurableObject(s, async (_i, state) => {
+			const row = state.storage.sql
+				.exec("SELECT * FROM idempotency_records")
+				.one();
+			expect(row["service_principal"]).toBe("discord-adapter");
+			expect(row["idempotency_key"]).toBe("k1");
+			expect(row["fingerprint_version"]).toBe("v1");
+			expect(row["request_fingerprint"]).toBe("fp-k1");
+			expect(JSON.parse(row["stored_result"] as string)).toMatchObject({
+				status: 200,
+			});
+		});
+
+		// Matching replay returns the stored descriptor verbatim without
+		// re-executing the mutation.
+		const replay = await runInDurableObject(s, async (i) =>
+			i.internalTransfer(DISCORD, idempotency("k1"), input),
+		);
+		expect(replay).toEqual(first);
+		expect(await s.listOperations()).toHaveLength(ops.length);
+
+		// Same key, different fingerprint → 409 conflict, nothing executed.
+		const conflict = await runInDurableObject(s, async (i) =>
+			i.internalTransfer(DISCORD, idempotency("k1", "other"), input),
+		);
+		expect(conflict.status).toBe(409);
+		expect(conflict.body).toMatchObject({
+			error: "idempotency_key_reuse",
+		});
+		expect(await s.listOperations()).toHaveLength(ops.length);
+	});
+
+	it("leaves no idempotency record when the protected mutation does not commit", async () => {
+		const s = freshStub();
+		await s.createBoundUser("alice", "iss", "a-sub");
+		const failed = await runInDurableObject(s, async (i) =>
+			i.internalTransfer(DISCORD, idempotency("k2"), {
+				from: { issuer: "iss", subject: "a-sub" },
+				to: { issuer: "iss", subject: "nobody" },
+				amount: 1,
+			}),
+		);
+		expect(failed.status).toBe(404);
+		expect(failed.body).toMatchObject({ error: "recipient_not_bound" });
+		await runInDurableObject(s, async (_i, state) => {
+			const row = state.storage.sql
+				.exec("SELECT COUNT(*) AS n FROM idempotency_records")
+				.one();
+			expect(row["n"]).toBe(0);
+		});
+	});
+
+	it("admin route methods require the admin-api principal and expose treasury reads", async () => {
+		const s = freshStub();
+		const denied = await runInDurableObject(s, async (i) =>
+			i.adminIssue(DISCORD, { amount: 5 }),
+		);
+		expect(denied.status).toBe(403);
+
+		const issued = await runInDurableObject(s, async (i) =>
+			i.adminIssue(ADMIN_PRINCIPAL, { amount: 5, metadata: "m" }),
+		);
+		expect(issued.status).toBe(200);
+		expect(issued.body).toMatchObject({
+			operation_id: expect.any(String),
+		});
+
+		const balance = await runInDurableObject(s, async (i) =>
+			i.adminTreasuryBalance(ADMIN_PRINCIPAL),
+		);
+		expect(balance).toEqual({ status: 200, body: { balance: 5 } });
+
+		const history = await runInDurableObject(s, async (i) =>
+			i.adminTreasuryHistory(ADMIN_PRINCIPAL, {}),
+		);
+		expect(history.status).toBe(200);
+		expect(history.body).toMatchObject({
+			operations: [{ kind: "TOKEN_ISSUANCE", metadata: "m" }],
+			next_cursor: null,
+		});
+	});
+});
+
+describe("identity_bindings / idempotency_records append-only", () => {
+	it("rejects updates and deletes on both new tables", async () => {
+		const s = freshStub();
+		await s.createBoundUser("alice", "iss", "sub");
+		await runInDurableObject(s, async (_i, state) => {
+			state.storage.sql.exec(
+				"INSERT INTO idempotency_records (service_principal, idempotency_key, fingerprint_version, request_fingerprint, stored_result, created_at) VALUES ('discord-adapter', 'k', 'v1', 'f', '{}', 1)",
+			);
+		});
+		for (const sql of [
+			"UPDATE identity_bindings SET user_id = 'x'",
+			"DELETE FROM identity_bindings",
+			"UPDATE idempotency_records SET stored_result = 'x'",
+			"DELETE FROM idempotency_records",
+		]) {
+			await expect(
+				runInDurableObject(s, async (_i, state) => {
+					state.storage.sql.exec(sql);
+				}),
+			).rejects.toThrow();
+		}
 	});
 });

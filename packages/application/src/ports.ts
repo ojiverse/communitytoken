@@ -15,6 +15,7 @@
 import type {
 	Actor,
 	HistoryRow,
+	IdempotencyRecord,
 	LedgerRecord,
 	OperationId,
 	OperationKind,
@@ -54,6 +55,8 @@ export type TransactionScope = {
 	readonly wallets: WalletRepository;
 	readonly operations: OperationRepository;
 	readonly ledger: LedgerRepository;
+	readonly identityBindings: IdentityBindingRepository;
+	readonly idempotencyRecords: IdempotencyRepository;
 };
 
 /**
@@ -193,4 +196,47 @@ export interface LedgerRepository {
 	 * boundary.
 	 */
 	insert(entry: NewLedgerEntry): LedgerRecord;
+}
+
+/**
+ * IdentityBinding lookup (the identity specification): resolves an exact
+ * `(issuer, subject)` external identity to the stable internal User it is
+ * bound to. Read-only at this layer — production binding creation is owned
+ * by registration and deliberately absent here.
+ */
+export interface IdentityBindingRepository {
+	/**
+	 * Returns the internal User bound to the exact `(issuer, subject)`
+	 * pair, or `undefined` when no binding exists. Both arguments are
+	 * already wire-validated non-empty strings; no normalization is
+	 * applied — the lookup is an exact match.
+	 */
+	findUserIdByExternal(issuer: string, subject: string): UserId | undefined;
+}
+
+/**
+ * IdempotencyRecord storage (the idempotency specification): the durable
+ * replay table keyed by `(servicePrincipal, idempotencyKey)`. Append is the
+ * only mutation — a record is written only when the protected mutation it
+ * guards commits in the same serialized section, and records never expire
+ * or change.
+ */
+export interface IdempotencyRepository {
+	/**
+	 * Returns the stored replay record for the
+	 * `(servicePrincipal, idempotencyKey)` pair, or `undefined` when no
+	 * protected mutation has ever committed under that pair.
+	 */
+	find(
+		servicePrincipal: string,
+		idempotencyKey: string,
+	): IdempotencyRecord | undefined;
+
+	/**
+	 * Persists `record` as the replay record of a committed protected
+	 * mutation. Called at most once per `(servicePrincipal,
+	 * idempotencyKey)` pair — the storage floor enforces uniqueness.
+	 * @throws {Error} when a record for the pair already exists.
+	 */
+	insert(record: IdempotencyRecord): void;
 }

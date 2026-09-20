@@ -34,6 +34,8 @@ import type {
 	UnitOfWork,
 } from "@communitytoken/application";
 import {
+	createIdempotencyRepository,
+	createIdentityBindingRepository,
 	createLedgerRepository,
 	createOperationRepository,
 	createWalletRepository,
@@ -155,6 +157,8 @@ export function createStorageUnitOfWork(
 						wallets: createWalletRepository(storage.sql),
 						operations: createOperationRepository(storage.sql),
 						ledger: createLedgerRepository(storage.sql),
+						identityBindings: createIdentityBindingRepository(storage.sql),
+						idempotencyRecords: createIdempotencyRepository(storage.sql),
 					};
 					// The section's single authoritative clock sample, taken after
 					// transaction entry and before any caller code runs.
@@ -165,6 +169,14 @@ export function createStorageUnitOfWork(
 							wallets: guardRepository(scope.wallets, assertOpen),
 							operations: guardRepository(scope.operations, assertOpen),
 							ledger: guardRepository(scope.ledger, assertOpen),
+							identityBindings: guardRepository(
+								scope.identityBindings,
+								assertOpen,
+							),
+							idempotencyRecords: guardRepository(
+								scope.idempotencyRecords,
+								assertOpen,
+							),
 						},
 						assertOpen,
 					);

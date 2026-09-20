@@ -13,6 +13,8 @@ import {
 } from "../src/application";
 import type {
 	Clock,
+	IdempotencyRepository,
+	IdentityBindingRepository,
 	LedgerRepository,
 	OperationRepository,
 	Synchronous,
@@ -23,6 +25,7 @@ import type {
 } from "../src/ports";
 import {
 	type HistoryRow,
+	type IdempotencyRecord,
 	type LedgerRecord,
 	ledgerId,
 	type OperationRecord,
@@ -30,6 +33,7 @@ import {
 	type Page,
 	persistedActor,
 	persistedActorOf,
+	type UserId,
 	userId,
 	type Wallet,
 	type WalletId,
@@ -43,11 +47,18 @@ type StoredOperation = {
 };
 type StoredLedger = { readonly rowid: number; readonly record: LedgerRecord };
 
-/** The mutable state behind an in-memory `UnitOfWork`. */
+/**
+ * The mutable state behind an in-memory `UnitOfWork`. `identityBindings`
+ * keys an exact `(issuer, subject)` pair and `idempotencyRecords` keys a
+ * `(servicePrincipal, idempotencyKey)` pair — both encoded as
+ * `JSON.stringify([a, b])` so no separator can collide with content.
+ */
 export type InMemoryState = {
 	wallets: Map<WalletId, Wallet>;
 	operationRows: StoredOperation[];
 	ledgerRows: StoredLedger[];
+	identityBindings: Map<string, UserId>;
+	idempotencyRecords: Map<string, IdempotencyRecord>;
 	nextId: number;
 	nextRowid: number;
 };
@@ -58,6 +69,8 @@ export function createInMemoryState(): InMemoryState {
 		wallets: new Map(),
 		operationRows: [],
 		ledgerRows: [],
+		identityBindings: new Map(),
+		idempotencyRecords: new Map(),
 		nextId: 0,
 		nextRowid: 0,
 	};
@@ -182,6 +195,37 @@ function ledgerRepository(state: InMemoryState): LedgerRepository {
 	};
 }
 
+function identityBindingRepository(
+	state: InMemoryState,
+): IdentityBindingRepository {
+	return {
+		findUserIdByExternal(issuer, subject) {
+			return state.identityBindings.get(JSON.stringify([issuer, subject]));
+		},
+	};
+}
+
+function idempotencyRepository(state: InMemoryState): IdempotencyRepository {
+	const key = (principal: string, idempotencyKey: string) =>
+		JSON.stringify([principal, idempotencyKey]);
+	return {
+		find(servicePrincipal, idempotencyKey) {
+			return state.idempotencyRecords.get(
+				key(servicePrincipal, idempotencyKey),
+			);
+		},
+		insert(record) {
+			const k = key(record.servicePrincipal, record.idempotencyKey);
+			if (state.idempotencyRecords.has(k)) {
+				throw new Error(
+					`duplicate idempotency record: ${record.servicePrincipal}/${record.idempotencyKey}`,
+				);
+			}
+			state.idempotencyRecords.set(k, Object.freeze(record));
+		},
+	};
+}
+
 /**
  * Runtime thenable detection: functions are thenable-capable too
  * (`Object.assign(fn, { then() {} })`), so both non-null objects and
@@ -209,6 +253,8 @@ function cloneState(state: InMemoryState): InMemoryState {
 		wallets: new Map(state.wallets),
 		operationRows: [...state.operationRows],
 		ledgerRows: [...state.ledgerRows],
+		identityBindings: new Map(state.identityBindings),
+		idempotencyRecords: new Map(state.idempotencyRecords),
 		nextId: state.nextId,
 		nextRowid: state.nextRowid,
 	};
@@ -218,6 +264,8 @@ function commitState(target: InMemoryState, staging: InMemoryState): void {
 	target.wallets = staging.wallets;
 	target.operationRows = staging.operationRows;
 	target.ledgerRows = staging.ledgerRows;
+	target.identityBindings = staging.identityBindings;
+	target.idempotencyRecords = staging.idempotencyRecords;
 	target.nextId = staging.nextId;
 	target.nextRowid = staging.nextRowid;
 }
@@ -296,6 +344,8 @@ export function createInMemoryUnitOfWork(
 					wallets: walletRepository(staging),
 					operations: operationRepository(staging),
 					ledger: ledgerRepository(staging),
+					identityBindings: identityBindingRepository(staging),
+					idempotencyRecords: idempotencyRepository(staging),
 				};
 				const wrapped = options?.wrapScope?.(scope) ?? scope;
 				// Per the temporal-authority specification: exactly one clock sample per section, taken before any
@@ -306,6 +356,14 @@ export function createInMemoryUnitOfWork(
 					wallets: guardRepository(wrapped.wallets, assertOpen),
 					operations: guardRepository(wrapped.operations, assertOpen),
 					ledger: guardRepository(wrapped.ledger, assertOpen),
+					identityBindings: guardRepository(
+						wrapped.identityBindings,
+						assertOpen,
+					),
+					idempotencyRecords: guardRepository(
+						wrapped.idempotencyRecords,
+						assertOpen,
+					),
 				};
 				const result = work(ctx);
 				if (isPromiseLike(result)) {

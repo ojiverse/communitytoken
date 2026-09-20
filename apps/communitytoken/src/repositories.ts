@@ -10,12 +10,15 @@
  */
 
 import type {
+	IdempotencyRepository,
+	IdentityBindingRepository,
 	LedgerRepository,
 	OperationRepository,
 	WalletRepository,
 } from "@communitytoken/application";
 import {
 	type HistoryRow,
+	type IdempotencyRecord,
 	type OperationRecord,
 	type Page,
 	type PersistedActor,
@@ -238,6 +241,86 @@ export function createLedgerRepository(sql: SqlStorage): LedgerRepository {
 				amount: entry.amount,
 				createdAt: entry.createdAt,
 			});
+		},
+	};
+}
+
+type IdentityBindingRow = {
+	readonly user_id: string;
+};
+
+/**
+ * SQLite-backed IdentityBinding lookup: exact `(issuer, subject)` match
+ * against the append-only binding table. Creation is registration-owned
+ * (PR-4); PR-3 has no insert port.
+ */
+export function createIdentityBindingRepository(
+	sql: SqlStorage,
+): IdentityBindingRepository {
+	return {
+		findUserIdByExternal(issuer, subject) {
+			const rows = sql
+				.exec(
+					"SELECT user_id FROM identity_bindings WHERE issuer = ? AND subject = ?",
+					issuer,
+					subject,
+				)
+				.toArray() as unknown as IdentityBindingRow[];
+			const row = rows[0];
+			return row === undefined ? undefined : rehydrate.userId(row.user_id);
+		},
+	};
+}
+
+type IdempotencyRow = {
+	readonly service_principal: string;
+	readonly idempotency_key: string;
+	readonly fingerprint_version: string;
+	readonly request_fingerprint: string;
+	readonly stored_result: string;
+	readonly created_at: number;
+};
+
+/**
+ * SQLite-backed IdempotencyRecord storage: the `(service_principal,
+ * idempotency_key)` UNIQUE constraint is the storage floor that makes a
+ * duplicate `insert` fail, so a second commit under the same key can never
+ * overwrite the first replay record.
+ */
+export function createIdempotencyRepository(
+	sql: SqlStorage,
+): IdempotencyRepository {
+	return {
+		find(servicePrincipal, idempotencyKey) {
+			const rows = sql
+				.exec(
+					"SELECT service_principal, idempotency_key, fingerprint_version, request_fingerprint, stored_result, created_at FROM idempotency_records WHERE service_principal = ? AND idempotency_key = ?",
+					servicePrincipal,
+					idempotencyKey,
+				)
+				.toArray() as unknown as IdempotencyRow[];
+			const row = rows[0];
+			if (row === undefined) return undefined;
+			const record: IdempotencyRecord = {
+				servicePrincipal: row.service_principal,
+				idempotencyKey: row.idempotency_key,
+				fingerprintVersion: row.fingerprint_version,
+				requestFingerprint: row.request_fingerprint,
+				storedResult: row.stored_result,
+				createdAt: row.created_at,
+			};
+			return Object.freeze(record);
+		},
+		insert(record) {
+			sql.exec(
+				"INSERT INTO idempotency_records (service_principal, idempotency_key, fingerprint_version, request_fingerprint, stored_result, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+				record.servicePrincipal,
+				record.idempotencyKey,
+				record.fingerprintVersion,
+				record.requestFingerprint,
+				record.storedResult,
+				record.createdAt,
+			);
 		},
 	};
 }

@@ -1,21 +1,21 @@
 /**
  * Runtime-independent economic evaluator for the CommunityToken rebuild.
  *
- * Owns the transition rules of docs/economic-model.md §3 and the preconditions
- * of the §4 formal model. This is the production-bound economic kernel: a pure
+ * Owns the transition rules of the economic-transitions specification and the
+ * preconditions of the economic-state specification's formal model. This is the production-bound economic kernel: a pure
  * function from current economic facts plus a command to either a rejection or
  * an `EconomicEffect`. It owns nothing else — no state, history, users,
  * storage, clock, or identifier allocation. Durable record identity and commit
  * timestamps are allocated at the persistence boundary that applies the
- * effect; balance deltas are expressed per wallet (§4 delta semantics), so a
+ * effect; balance deltas are expressed per wallet (the economic-transitions specification delta semantics), so a
  * self-transfer is a recorded net-zero movement rather than an error or a
  * supply leak.
  */
 
-/** Upper bound of every monetary domain (§3): TokenAmount, WalletBalance, TotalSupply. */
+/** Upper bound of every monetary domain (the economic-state specification): TokenAmount, WalletBalance, TotalSupply. */
 export const MAX_MONETARY_VALUE = Number.MAX_SAFE_INTEGER;
 
-/** Well-known identifier of the deployment's single system wallet (§2). */
+/** Well-known identifier of the deployment's single system wallet (the economic-state specification). */
 export const TREASURY_WALLET_ID = "treasury";
 
 export type WalletKind = "system" | "user";
@@ -60,7 +60,7 @@ export type RejectionCode =
 	| "OVERFLOW";
 
 /**
- * The semantic effect of an accepted operation (§4 transition output):
+ * The semantic effect of an accepted operation (the economic-transitions specification transition output):
  * `deltas` maps each touched wallet to its signed balance change — the
  * indicator-form `Delta_C(w)` of the formal model restricted to non-zero
  * entries — while the remaining fields are the facts the persistence boundary
@@ -112,7 +112,7 @@ function reject(code: RejectionCode, detail: string): RejectedOperation {
 /**
  * Evaluates a command against current economic facts. Pure and total: every
  * input produces either a rejection (nothing committable exists) or an effect
- * the caller persists atomically. Validation order follows §4: amount domain,
+ * the caller persists atomically. Validation order follows the economic-transitions specification: amount domain,
  * wallet existence, direction discipline, funds, then the domain bounds of the
  * resulting balances and total supply.
  *
@@ -166,7 +166,7 @@ export function evaluateOperation(
 		deltas.set(to.id, (deltas.get(to.id) ?? 0) + amount);
 		if (deltas.get(from.id) === 0) deltas.delete(from.id);
 	}
-	// §4 precondition: every resulting balance stays in WalletBalance. A
+	// Per the economic-transitions specification: every resulting balance stays in WalletBalance. A
 	// self-transfer produces no delta, so it can never overflow.
 	for (const [walletId, delta] of deltas) {
 		const wallet = walletId === from.id ? from : to;

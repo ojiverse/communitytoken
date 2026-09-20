@@ -60,6 +60,10 @@ export {
 	userSelector,
 } from "./types";
 export {
+	applyEconomicCommand,
+	type EconomicSelectorCommand,
+} from "./use-cases/apply-economic-command";
+export {
 	type DistributeTokenInput,
 	distributeToken,
 } from "./use-cases/distribute-token";

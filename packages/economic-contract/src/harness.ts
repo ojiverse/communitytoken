@@ -2,7 +2,7 @@
  * The storage-independent economic contract for the CommunityToken rebuild.
  *
  * `defineEconomicContract` registers one suite derived from the invariants and
- * transition rules of docs/economic-model.md §3–§4. Any storage backend runs
+ * transition rules of the economic-transitions and economic-state specifications. Any storage backend runs
  * the identical suite by supplying an `EconomicHarness`, so the suite — not
  * any implementation — is the migration contract of issue #3 §4.
  */
@@ -30,7 +30,7 @@ export type OperationKind =
 	| "P2P_TRANSFER"
 	| "TREASURY_PAYMENT";
 
-/** Rejection vocabulary shared by every conforming implementation (§4). */
+/** Rejection vocabulary shared by every conforming implementation (the economic-transitions specification). */
 export type RejectionCode =
 	| "INVALID_AMOUNT"
 	| "WALLET_NOT_FOUND"

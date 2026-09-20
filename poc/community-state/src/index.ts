@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 
 /**
- * Persistence PoC for the CommunityToken rebuild (issue #3, Phase 1 §5).
+ * Persistence PoC for the CommunityToken rebuild (issue #3, docs/specification/).
  *
  * Proves that the target production consistency model —
  *   Worker -> single named CommunityState Durable Object -> SQLite storage —
@@ -137,7 +137,7 @@ export class CommunityState extends DurableObject {
 
 	/**
 	 * Creates a user wallet. Only the bootstrapped treasury may carry the
-	 * `system` kind (§4 unique treasury), so callers cannot mint another.
+	 * `system` kind (unique treasury per the economic-state specification), so callers cannot mint another.
 	 */
 	createWallet(id: string): void {
 		this.ctx.storage.sql.exec(
@@ -233,11 +233,11 @@ export class CommunityState extends DurableObject {
 				);
 			}
 
-			// §4 delta semantics: a non-issuance self-transfer nets to zero, so
+			// Per the economic-transitions specification: a non-issuance self-transfer nets to zero, so
 			// it moves no balance and can never overflow.
 			const selfTransfer = kind !== "TOKEN_ISSUANCE" && from.id === to.id;
 
-			// §3 overflow rejection: no credit may push a wallet balance or the
+			// Per the economic-transitions specification: overflow rejection — no credit may push a wallet balance or the
 			// total supply above the 2^53-1 domain.
 			if (!selfTransfer && to.balance + amount > Number.MAX_SAFE_INTEGER) {
 				throw new Error(

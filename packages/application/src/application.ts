@@ -1,6 +1,5 @@
 /**
- * The application boundary of the Phase 2 CommunityToken service (issue #4
- * §1–§2): the runtime-independent use cases a trusted surface invokes after
+ * The application boundary of the Phase 2 CommunityToken service (issue #4): the runtime-independent use cases a trusted surface invokes after
  * resolving an `Actor`. Owns orchestration, authorization, and actor
  * context; owns no storage, no platform types, and no economic rules — the
  * economic decision boundary remains `@communitytoken/economic-kernel`.
@@ -51,7 +50,7 @@ export type ApplicationDeps = {
 
 /**
  * The runtime-independent application contract invoked by trusted surfaces
- * (the `/internal/*` and `/admin/*` boundaries of the economic-transition specification1). Every
+ * (the `/internal/*` and `/admin/*` boundaries of the authentication/delegation specification). Every
  * method runs its operation inside `deps.uow.transact`. Callers that must
  * extend the atomic unit — the idempotency record of the idempotency specification, the Daily Reward
  * claim row of the Daily Reward specification — instead open the section themselves and invoke the
@@ -100,7 +99,7 @@ export interface CommunityTokenApplication {
 	): UseCaseResult<PayTreasuryResult>;
 
 	/**
-	 * Balance of a user wallet under self-only visibility (the economic-transition specification7):
+	 * Balance of a user wallet under self-only visibility (the actor/visibility specification):
 	 * the selector must name the acting user's own wallet.
 	 * @param actor the wallet owner; only `UserActor` is accepted.
 	 */
@@ -110,8 +109,8 @@ export interface CommunityTokenApplication {
 	): UseCaseResult<BalanceResult>;
 
 	/**
-	 * Treasury balance — administrative treasury inspection (the economic-transition specification0,
-	 * the actor/visibility specification).
+	 * Treasury balance — administrative treasury inspection (the authentication/delegation
+	 * and actor/visibility specifications).
 	 * @param actor the `admin-api` service principal.
 	 */
 	getBalance(
@@ -123,7 +122,7 @@ export interface CommunityTokenApplication {
 	 * Newest-first cursor-paginated history of a user wallet under the same
 	 * visibility rule as `getBalance`. `request.limit` must be an integer
 	 * in `1..100` (default 50); out-of-contract values are an
-	 * `invalid-input` failure (the economic-transition specification7).
+	 * `invalid-input` failure (the actor/visibility specification).
 	 * @param actor the wallet owner; only `UserActor` is accepted.
 	 */
 	getTransactionHistory(

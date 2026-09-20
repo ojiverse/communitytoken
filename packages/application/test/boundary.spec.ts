@@ -438,6 +438,56 @@ describe("closed transaction context", () => {
 		);
 	});
 
+	it("every property read on a captured context throws after the section commits", () => {
+		const fx = createInMemoryFixture();
+		let captured!: TransactionContext;
+		fx.uow.transact((ctx) => {
+			captured = ctx;
+			return 0;
+		});
+
+		expect(() => captured.nowMs).toThrow(/closed/);
+		expect(() => captured.wallets).toThrow(/closed/);
+		expect(() => captured.operations).toThrow(/closed/);
+		expect(() => captured.ledger).toThrow(/closed/);
+		expect(() => captured.identityBindings).toThrow(/closed/);
+		expect(() => captured.idempotencyRecords).toThrow(/closed/);
+	});
+
+	it("every property read on a captured context throws after the section aborts", () => {
+		const fx = createInMemoryFixture();
+		let captured!: TransactionContext;
+		expect(() =>
+			fx.uow.transact((ctx) => {
+				captured = ctx;
+				throw new Error("abort");
+			}),
+		).toThrow(/abort/);
+
+		expect(() => captured.nowMs).toThrow(/closed/);
+		expect(() => captured.wallets).toThrow(/closed/);
+		expect(() => captured.operations).toThrow(/closed/);
+		expect(() => captured.ledger).toThrow(/closed/);
+		expect(() => captured.identityBindings).toThrow(/closed/);
+		expect(() => captured.idempotencyRecords).toThrow(/closed/);
+	});
+
+	it("a captured context stays dead while a later section is open", () => {
+		const fx = createInMemoryFixture();
+		let stale!: TransactionContext;
+		fx.uow.transact((ctx) => {
+			stale = ctx;
+			return 0;
+		});
+
+		expect(() =>
+			fx.uow.transact((ctx) => {
+				void stale.nowMs;
+				ctx.wallets.totalSupply();
+			}),
+		).toThrow(/closed/);
+	});
+
 	it("a captured repository handle is revoked with its section", () => {
 		const fx = createInMemoryFixture();
 		let wallets!: WalletRepository;

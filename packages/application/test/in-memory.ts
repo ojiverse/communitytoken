@@ -304,14 +304,61 @@ function guardRepository<T extends object>(
 }
 
 /**
+ * Binds the `TransactionContext` itself to the section's lifetime — the
+ * same semantics the production adapter enforces: every property trap
+ * asserts the section is still open, so a context captured outside
+ * `transact` is permanently unusable. Reading `nowMs` or a repository
+ * slot throws exactly like calling a revoked repository method, whether
+ * the section committed or rolled back, and a later section never revives
+ * a stale context.
+ */
+function guardContext(
+	ctx: TransactionContext,
+	assertOpen: () => void,
+): TransactionContext {
+	return new Proxy(ctx, {
+		get(target, property, receiver) {
+			assertOpen();
+			return Reflect.get(target, property, receiver);
+		},
+		set(target, property, value, receiver) {
+			assertOpen();
+			return Reflect.set(target, property, value, receiver);
+		},
+		has(target, property) {
+			assertOpen();
+			return Reflect.has(target, property);
+		},
+		deleteProperty(target, property) {
+			assertOpen();
+			return Reflect.deleteProperty(target, property);
+		},
+		defineProperty(target, property, descriptor) {
+			assertOpen();
+			return Reflect.defineProperty(target, property, descriptor);
+		},
+		getOwnPropertyDescriptor(target, property) {
+			assertOpen();
+			return Reflect.getOwnPropertyDescriptor(target, property);
+		},
+		ownKeys(target) {
+			assertOpen();
+			return Reflect.ownKeys(target);
+		},
+	});
+}
+
+/**
  * An in-memory `UnitOfWork` faithful to the atomic boundary it models:
  * entering a section samples the `Clock` exactly once and freezes the value
  * as `ctx.nowMs` (the temporal-authority specification); `work` runs against a staging copy of the
  * state that replaces the committed state only when `work` returns a
  * non-Promise result — a throw, including the runtime PromiseLike check,
  * discards the staging copy, so no observable state change survives an
- * aborted section. Repository handles are revoked when the section closes,
- * and sections do not nest: composing work shares the open
+ * aborted section. The `TransactionContext` itself and the repository
+ * handles bound to it are revoked when the section closes — reading a
+ * property of a closed context throws, exactly like the production
+ * adapter — and sections do not nest: composing work shares the open
  * `TransactionContext`.
  */
 export function createInMemoryUnitOfWork(
@@ -351,20 +398,23 @@ export function createInMemoryUnitOfWork(
 				// Per the temporal-authority specification: exactly one clock sample per section, taken before any
 				// caller code runs.
 				const nowMs = clock.nowMs();
-				const ctx: TransactionContext = {
-					nowMs,
-					wallets: guardRepository(wrapped.wallets, assertOpen),
-					operations: guardRepository(wrapped.operations, assertOpen),
-					ledger: guardRepository(wrapped.ledger, assertOpen),
-					identityBindings: guardRepository(
-						wrapped.identityBindings,
-						assertOpen,
-					),
-					idempotencyRecords: guardRepository(
-						wrapped.idempotencyRecords,
-						assertOpen,
-					),
-				};
+				const ctx = guardContext(
+					{
+						nowMs,
+						wallets: guardRepository(wrapped.wallets, assertOpen),
+						operations: guardRepository(wrapped.operations, assertOpen),
+						ledger: guardRepository(wrapped.ledger, assertOpen),
+						identityBindings: guardRepository(
+							wrapped.identityBindings,
+							assertOpen,
+						),
+						idempotencyRecords: guardRepository(
+							wrapped.idempotencyRecords,
+							assertOpen,
+						),
+					},
+					assertOpen,
+				);
 				const result = work(ctx);
 				if (isPromiseLike(result)) {
 					throw new Error(

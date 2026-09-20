@@ -10,8 +10,8 @@
  * exact wire shape (400) → Idempotency-Key where required (400) →
  * fingerprint (400 on canonicalization failure) → DO call. Route-facing
  * DO methods return `{status, body}` descriptors forwarded verbatim;
- * unexpected RPC rejections map to `500 internal_error` with no detail
- * leak.
+ * any unexpected exception after route match — Worker-side or RPC —
+ * normalizes to `500 internal_error` with no detail leak.
  *
  * Routing is exact: no trailing-slash normalization, no case
  * normalization, and a wrong method on a known path is `404 not_found`
@@ -361,8 +361,8 @@ function validateTransfersBody(
 	const to = validateIdentity(body["to"], "to");
 	if (!to.ok) return to;
 	const amount = body["amount"];
-	if (typeof amount !== "number") {
-		return invalidRequest("amount must be a JSON number");
+	if (typeof amount !== "number" || !Number.isFinite(amount)) {
+		return invalidRequest("amount must be a finite JSON number");
 	}
 	return valid({ from: from.value, to: to.value, amount });
 }
@@ -375,8 +375,8 @@ function validateIssueBody(
 		return invalidRequest(`unknown field: ${extra}`);
 	}
 	const amount = body["amount"];
-	if (typeof amount !== "number") {
-		return invalidRequest("amount must be a JSON number");
+	if (typeof amount !== "number" || !Number.isFinite(amount)) {
+		return invalidRequest("amount must be a finite JSON number");
 	}
 	const input: { amount: number; metadata?: string } = { amount };
 	if (body["metadata"] !== undefined) {
@@ -400,8 +400,8 @@ function validateDistributeBody(
 		return invalidRequest("body requires non-empty string issuer and subject");
 	}
 	const amount = body["amount"];
-	if (typeof amount !== "number") {
-		return invalidRequest("amount must be a JSON number");
+	if (typeof amount !== "number" || !Number.isFinite(amount)) {
+		return invalidRequest("amount must be a finite JSON number");
 	}
 	const input: {
 		issuer: string;
@@ -611,6 +611,14 @@ const REQUIRED_PRINCIPAL: Record<RouteGroup, ServicePrincipal> = {
 /**
  * The Worker `fetch` entry of the trusted core API: route match, Bearer
  * authentication, route-group authorization, then the route handler.
+ *
+ * Route matching runs before the unexpected-error boundary: an unknown
+ * method/path is `404 not_found` without touching authentication or the
+ * `COMMUNITY_STATE` binding, so it answers identically even when `env`
+ * is broken. Everything after the match is wrapped — any unexpected
+ * Worker-side exception (WebCrypto failure, binding acquisition, a
+ * non-`CanonicalizationError` fingerprint throw, a route-handler throw)
+ * normalizes to `500 internal_error` with no internal detail leak.
  */
 export async function handleRequest(
 	request: Request,
@@ -621,24 +629,28 @@ export async function handleRequest(
 	if (route === undefined) {
 		return errorResponse(404, "not_found", "no such route");
 	}
-	const principal = await authenticate(request, {
-		adminApiToken: env.ADMIN_API_TOKEN,
-		discordAdapterToken: env.DISCORD_ADAPTER_SERVICE_TOKEN,
-	});
-	if (principal === null) {
-		return errorResponse(401, "unauthorized", "authentication failed");
+	try {
+		const principal = await authenticate(request, {
+			adminApiToken: env.ADMIN_API_TOKEN,
+			discordAdapterToken: env.DISCORD_ADAPTER_SERVICE_TOKEN,
+		});
+		if (principal === null) {
+			return errorResponse(401, "unauthorized", "authentication failed");
+		}
+		if (principal !== REQUIRED_PRINCIPAL[route.group]) {
+			return errorResponse(
+				403,
+				"forbidden",
+				"the principal is not authorized for this route group",
+			);
+		}
+		return await route.handle({
+			request,
+			url,
+			principal,
+			stub: communityStub(env),
+		});
+	} catch {
+		return errorResponse(500, "internal_error", "unexpected internal error");
 	}
-	if (principal !== REQUIRED_PRINCIPAL[route.group]) {
-		return errorResponse(
-			403,
-			"forbidden",
-			"the principal is not authorized for this route group",
-		);
-	}
-	return route.handle({
-		request,
-		url,
-		principal,
-		stub: communityStub(env),
-	});
 }

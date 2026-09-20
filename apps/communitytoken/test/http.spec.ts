@@ -1,5 +1,7 @@
 import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import type { CommunityStateApi } from "../src/http";
+import { handleRequest } from "../src/http";
 import type { CommunityState } from "../src/index";
 
 /**
@@ -680,5 +682,157 @@ describe("internalTransfer idempotency", () => {
 		});
 		expect(loneSurrogate.status).toBe(400);
 		expect(await errorCode(loneSurrogate)).toBe("invalid_request");
+	});
+});
+
+describe("non-finite amounts", () => {
+	it("400s a parsed-JSON number that is not finite, on every amount-bearing route", async () => {
+		const transfer = await call("/internal/transfers", {
+			token: DISCORD_TOKEN(),
+			headers: { "Idempotency-Key": `nf-${crypto.randomUUID()}` },
+			rawBody:
+				'{"from":{"issuer":"i","subject":"a"},"to":{"issuer":"i","subject":"b"},"amount":1e400}',
+		});
+		expect(transfer.status).toBe(400);
+		expect(await errorCode(transfer)).toBe("invalid_request");
+
+		const issuance = await call("/admin/issuances", {
+			token: ADMIN_TOKEN(),
+			rawBody: '{"amount":1e400}',
+		});
+		expect(issuance.status).toBe(400);
+		expect(await errorCode(issuance)).toBe("invalid_request");
+
+		const distribution = await call("/admin/distributions", {
+			token: ADMIN_TOKEN(),
+			rawBody: '{"issuer":"i","subject":"s","amount":-1e400}',
+		});
+		expect(distribution.status).toBe(400);
+		expect(await errorCode(distribution)).toBe("invalid_request");
+	});
+
+	it("still passes finite but domain-invalid amounts to the kernel as 422", async () => {
+		// 0 and 1.5 violate the kernel's amount domain; 9007199254740992 is
+		// a finite JSON number outside the safe-integer range. All stay 422.
+		for (const rawBody of [
+			'{"amount":0}',
+			'{"amount":1.5}',
+			'{"amount":9007199254740992}',
+		]) {
+			const response = await call("/admin/issuances", {
+				token: ADMIN_TOKEN(),
+				rawBody,
+			});
+			expect(response.status).toBe(422);
+			expect(await errorCode(response)).toBe("invalid_amount");
+		}
+
+		const { a, b } = await seedTransferPair();
+		for (const amount of [0, 1.5]) {
+			const response = await call("/internal/transfers", {
+				token: DISCORD_TOKEN(),
+				headers: { "Idempotency-Key": `nf-${crypto.randomUUID()}` },
+				body: transferBody(a, b, amount),
+			});
+			expect(response.status).toBe(422);
+			expect(await errorCode(response)).toBe("invalid_amount");
+		}
+	});
+});
+
+async function seedTransferPair(): Promise<{ a: string; b: string }> {
+	const a = `ta-${crypto.randomUUID()}`;
+	const b = `tb-${crypto.randomUUID()}`;
+	await seedBound(`u-${a}`, a);
+	await seedBound(`u-${b}`, b);
+	await call("/admin/issuances", {
+		token: ADMIN_TOKEN(),
+		body: { amount: 100 },
+	});
+	await call("/admin/distributions", {
+		token: ADMIN_TOKEN(),
+		body: { issuer: ISSUER, subject: a, amount: 100 },
+	});
+	return { a, b };
+}
+
+describe("unexpected failure boundary", () => {
+	/**
+	 * An `Env` whose `COMMUNITY_STATE` binding explodes on acquisition —
+	 * token secrets stay valid so authentication succeeds and the request
+	 * reaches binding acquisition inside the guarded pipeline.
+	 */
+	function brokenEnv(): Env {
+		return {
+			ADMIN_API_TOKEN: env.ADMIN_API_TOKEN,
+			DISCORD_ADAPTER_SERVICE_TOKEN: env.DISCORD_ADAPTER_SERVICE_TOKEN,
+			COMMUNITY_STATE: {
+				idFromName() {
+					throw new Error("binding exploded — internal detail");
+				},
+				get() {
+					throw new Error("binding exploded — internal detail");
+				},
+			},
+		} as unknown as Env;
+	}
+
+	function adminRequest(path: string): Request {
+		return new Request(`${ORIGIN}${path}`, {
+			method: "GET",
+			headers: { Authorization: `Bearer ${ADMIN_TOKEN()}` },
+		});
+	}
+
+	it("still 404s unknown routes with a broken Env — matching precedes binding evaluation", async () => {
+		const response = await handleRequest(
+			new Request(`${ORIGIN}/no/such/route`, { method: "POST" }),
+			brokenEnv(),
+		);
+		expect(response.status).toBe(404);
+		expect(await errorCode(response)).toBe("not_found");
+	});
+
+	it("normalizes a COMMUNITY_STATE acquisition throw to 500 internal_error without detail", async () => {
+		const response = await handleRequest(
+			adminRequest("/admin/treasury/balance"),
+			brokenEnv(),
+		);
+		expect(response.status).toBe(500);
+		const text = await response.text();
+		expect((JSON.parse(text) as { error: string }).error).toBe(
+			"internal_error",
+		);
+		expect(text).not.toContain("binding exploded");
+	});
+
+	it("normalizes a route-facing stub rejection to 500 internal_error without detail", async () => {
+		const rejectingStub = {
+			adminTreasuryBalance() {
+				return Promise.reject(new Error("storage exploded — internal detail"));
+			},
+		} as unknown as CommunityStateApi;
+		const envWithRejectingStub = {
+			ADMIN_API_TOKEN: env.ADMIN_API_TOKEN,
+			DISCORD_ADAPTER_SERVICE_TOKEN: env.DISCORD_ADAPTER_SERVICE_TOKEN,
+			COMMUNITY_STATE: {
+				idFromName() {
+					return {};
+				},
+				get() {
+					return rejectingStub;
+				},
+			},
+		} as unknown as Env;
+		const response = await handleRequest(
+			adminRequest("/admin/treasury/balance"),
+			envWithRejectingStub,
+		);
+		expect(response.status).toBe(500);
+		const text = await response.text();
+		expect((JSON.parse(text) as { error: string }).error).toBe(
+			"internal_error",
+		);
+		expect(text).not.toContain("storage exploded");
 	});
 });

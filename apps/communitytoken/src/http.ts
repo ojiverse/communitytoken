@@ -155,7 +155,15 @@ type RouteContext = {
 	readonly request: Request;
 	readonly url: URL;
 	readonly principal: ServicePrincipal;
-	readonly stub: CommunityStateApi;
+	/**
+	 * Acquires the `CommunityState` stub. Lazily evaluated: a handler calls
+	 * it only after every Worker-side validation step (media type, JSON
+	 * parse, exact shape, Idempotency-Key, fingerprint, query grammar) has
+	 * succeeded — the fixed pipeline order puts DO acquisition immediately
+	 * before the RPC, so a request that fails validation never touches the
+	 * binding.
+	 */
+	readonly getStub: () => CommunityStateApi;
 };
 
 type Route = {
@@ -482,29 +490,31 @@ async function invoke(call: () => Promise<RouteResponse>): Promise<Response> {
 
 const internalBalanceRoute: Route = {
 	group: "internal",
-	async handle({ request, principal, stub }) {
+	async handle({ request, principal, getStub }) {
 		const body = await readJsonObject(request);
 		if (!body.ok) return body.response;
 		const input = validateBalanceBody(body.value);
 		if (!input.ok) return input.response;
+		const stub = getStub();
 		return invoke(() => stub.internalBalance(principal, input.value));
 	},
 };
 
 const internalHistoryRoute: Route = {
 	group: "internal",
-	async handle({ request, principal, stub }) {
+	async handle({ request, principal, getStub }) {
 		const body = await readJsonObject(request);
 		if (!body.ok) return body.response;
 		const input = validateHistoryBody(body.value);
 		if (!input.ok) return input.response;
+		const stub = getStub();
 		return invoke(() => stub.internalHistory(principal, input.value));
 	},
 };
 
 const internalTransfersRoute: Route = {
 	group: "internal",
-	async handle({ request, url, principal, stub }) {
+	async handle({ request, url, principal, getStub }) {
 		const body = await readJsonObject(request);
 		if (!body.ok) return body.response;
 		const input = validateTransfersBody(body.value);
@@ -538,6 +548,7 @@ const internalTransfersRoute: Route = {
 			}
 			throw error;
 		}
+		const stub = getStub();
 		return invoke(() =>
 			stub.internalTransfer(
 				principal,
@@ -550,39 +561,41 @@ const internalTransfersRoute: Route = {
 
 const adminIssueRoute: Route = {
 	group: "admin",
-	async handle({ request, principal, stub }) {
+	async handle({ request, principal, getStub }) {
 		const body = await readJsonObject(request);
 		if (!body.ok) return body.response;
 		const input = validateIssueBody(body.value);
 		if (!input.ok) return input.response;
+		const stub = getStub();
 		return invoke(() => stub.adminIssue(principal, input.value));
 	},
 };
 
 const adminDistributeRoute: Route = {
 	group: "admin",
-	async handle({ request, principal, stub }) {
+	async handle({ request, principal, getStub }) {
 		const body = await readJsonObject(request);
 		if (!body.ok) return body.response;
 		const input = validateDistributeBody(body.value);
 		if (!input.ok) return input.response;
+		const stub = getStub();
 		return invoke(() => stub.adminDistribute(principal, input.value));
 	},
 };
 
 const adminTreasuryBalanceRoute: Route = {
 	group: "admin",
-	handle({ principal, stub }) {
-		return invoke(() => stub.adminTreasuryBalance(principal));
+	handle({ principal, getStub }) {
+		return invoke(() => getStub().adminTreasuryBalance(principal));
 	},
 };
 
 const adminTreasuryHistoryRoute: Route = {
 	group: "admin",
-	handle({ url, principal, stub }) {
+	handle({ url, principal, getStub }) {
 		const query = validateHistoryQuery(url);
 		if (!query.ok) return Promise.resolve(query.response);
-		return invoke(() => stub.adminTreasuryHistory(principal, query.value));
+		return invoke(() => getStub().adminTreasuryHistory(principal, query.value));
 	},
 };
 
@@ -648,7 +661,7 @@ export async function handleRequest(
 			request,
 			url,
 			principal,
-			stub: communityStub(env),
+			getStub: () => communityStub(env),
 		});
 	} catch {
 		return errorResponse(500, "internal_error", "unexpected internal error");

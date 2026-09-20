@@ -784,6 +784,41 @@ describe("unexpected failure boundary", () => {
 		});
 	}
 
+	/**
+	 * A `COMMUNITY_STATE` binding that counts `idFromName`/`get` calls and
+	 * throws on either — used to prove a request reached the end of the
+	 * Worker-side pipeline without touching the binding, or that the
+	 * acquisition throw itself normalizes to 500.
+	 */
+	function countingBrokenEnv(): { env: Env; calls: { n: number } } {
+		const calls = { n: 0 };
+		const broken = {
+			ADMIN_API_TOKEN: env.ADMIN_API_TOKEN,
+			DISCORD_ADAPTER_SERVICE_TOKEN: env.DISCORD_ADAPTER_SERVICE_TOKEN,
+			COMMUNITY_STATE: {
+				idFromName() {
+					calls.n += 1;
+					throw new Error("binding exploded — internal detail");
+				},
+				get() {
+					calls.n += 1;
+					throw new Error("binding exploded — internal detail");
+				},
+			},
+		} as unknown as Env;
+		return { env: broken, calls };
+	}
+
+	function postRequest(path: string, init: RequestInit = {}): Request {
+		const headers = new Headers(init.headers);
+		headers.set("Authorization", `Bearer ${DISCORD_TOKEN()}`);
+		return new Request(`${ORIGIN}${path}`, {
+			method: "POST",
+			...init,
+			headers,
+		});
+	}
+
 	it("still 404s unknown routes with a broken Env — matching precedes binding evaluation", async () => {
 		const response = await handleRequest(
 			new Request(`${ORIGIN}/no/such/route`, { method: "POST" }),
@@ -791,6 +826,122 @@ describe("unexpected failure boundary", () => {
 		);
 		expect(response.status).toBe(404);
 		expect(await errorCode(response)).toBe("not_found");
+	});
+
+	it("never touches the binding for requests that fail before the DO call", async () => {
+		const { env: broken, calls } = countingBrokenEnv();
+		const json = { "Content-Type": "application/json" };
+		const validTransferBody = JSON.stringify({
+			from: { issuer: ISSUER, subject: "a" },
+			to: { issuer: ISSUER, subject: "b" },
+			amount: 1,
+		});
+
+		// 401: no bearer credential on a known route.
+		const unauthenticated = await handleRequest(
+			new Request(`${ORIGIN}/internal/balance`, { method: "POST" }),
+			broken,
+		);
+		expect(unauthenticated.status).toBe(401);
+		expect(await errorCode(unauthenticated)).toBe("unauthorized");
+
+		// 403: an authenticated principal on the wrong route group — the
+		// admin credential on an internal route.
+		const forbidden = await handleRequest(
+			new Request(`${ORIGIN}/internal/balance`, {
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${ADMIN_TOKEN()}`,
+					...json,
+				},
+				body: "{}",
+			}),
+			broken,
+		);
+		expect(forbidden.status).toBe(403);
+		expect(await errorCode(forbidden)).toBe("forbidden");
+
+		// 415: authenticated JSON route with a non-JSON media type.
+		const wrongMedia = await handleRequest(
+			postRequest("/internal/balance", {
+				headers: { "Content-Type": "text/plain" },
+				body: "{}",
+			}),
+			broken,
+		);
+		expect(wrongMedia.status).toBe(415);
+		expect(await errorCode(wrongMedia)).toBe("unsupported_media_type");
+
+		// 400 invalid_request: malformed JSON on an authenticated JSON route.
+		const malformed = await handleRequest(
+			postRequest("/internal/balance", { headers: json, body: "{" }),
+			broken,
+		);
+		expect(malformed.status).toBe(400);
+		expect(await errorCode(malformed)).toBe("invalid_request");
+
+		// 400 idempotency_key_required: valid transfer body, missing key.
+		const noKey = await handleRequest(
+			postRequest("/internal/transfers", {
+				headers: json,
+				body: validTransferBody,
+			}),
+			broken,
+		);
+		expect(noKey.status).toBe(400);
+		expect(await errorCode(noKey)).toBe("idempotency_key_required");
+
+		// 400 invalid_request: canonicalization failure (lone surrogate in
+		// the parsed body) after a valid key is supplied.
+		const loneSurrogate = await handleRequest(
+			postRequest("/internal/transfers", {
+				headers: {
+					...json,
+					"Idempotency-Key": `cf-${crypto.randomUUID()}`,
+				},
+				body: `{"from":{"issuer":"i","subject":"\\ud800"},"to":{"issuer":"i","subject":"t"},"amount":1}`,
+			}),
+			broken,
+		);
+		expect(loneSurrogate.status).toBe(400);
+		expect(await errorCode(loneSurrogate)).toBe("invalid_request");
+
+		// 400 invalid_limit / invalid_cursor: authenticated admin history
+		// with an invalid query — validation fails before the DO call.
+		const badLimit = await handleRequest(
+			adminRequest("/admin/treasury/history?limit=0"),
+			broken,
+		);
+		expect(badLimit.status).toBe(400);
+		expect(await errorCode(badLimit)).toBe("invalid_limit");
+		const badCursor = await handleRequest(
+			adminRequest("/admin/treasury/history?cursor=abc"),
+			broken,
+		);
+		expect(badCursor.status).toBe(400);
+		expect(await errorCode(badCursor)).toBe("invalid_cursor");
+
+		// None of the above may have touched the COMMUNITY_STATE binding.
+		expect(calls.n).toBe(0);
+	});
+
+	it("500s only after all Worker-side validation succeeds and acquisition throws", async () => {
+		const { env: broken, calls } = countingBrokenEnv();
+		const response = await handleRequest(
+			postRequest("/internal/balance", {
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ issuer: ISSUER, subject: "s" }),
+			}),
+			broken,
+		);
+		expect(response.status).toBe(500);
+		const text = await response.text();
+		expect((JSON.parse(text) as { error: string }).error).toBe(
+			"internal_error",
+		);
+		expect(text).not.toContain("binding exploded");
+		// Validation fully passed, so acquisition was attempted exactly once.
+		expect(calls.n).toBe(1);
 	});
 
 	it("normalizes a COMMUNITY_STATE acquisition throw to 500 internal_error without detail", async () => {

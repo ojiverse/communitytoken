@@ -298,6 +298,24 @@ export type Page<T> = {
 };
 
 /**
+ * A persisted IdempotencyRecord (the idempotency specification): the replay
+ * record of a protected mutation that committed under the
+ * `(servicePrincipal, idempotencyKey)` pair. `storedResult` is the opaque
+ * serialized outcome the trusted boundary replays on a matching request;
+ * `fingerprintVersion` + `requestFingerprint` identify the request the
+ * record belongs to, so the same key under a different request is a
+ * conflict rather than a replay.
+ */
+export type IdempotencyRecord = {
+	readonly servicePrincipal: string;
+	readonly idempotencyKey: string;
+	readonly fingerprintVersion: string;
+	readonly requestFingerprint: string;
+	readonly storedResult: string;
+	readonly createdAt: number;
+};
+
+/**
  * The actor is not permitted to run this use case — for example a non-user
  * actor on a wallet-owner operation, or a non-admin actor on an
  * administrative operation (the authentication/delegation and actor/visibility specifications).

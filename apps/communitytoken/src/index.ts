@@ -1,14 +1,17 @@
 import { CommunityState } from "./community-state";
+import { handleRequest } from "./http";
 
 export { CommunityState };
 
 /**
- * The CommunityToken core Worker. In PR-2 no route exists yet — the fixed
- * Phase 2 route set lands with the feature PRs that own it — so every
- * request gets a plain 404. No health endpoint, no provisional route.
+ * The CommunityToken core Worker (issue #4 PR-3): serves the seven
+ * route-facing endpoints of the trusted core API plus fixed `404` for
+ * everything else, including the routes later PRs own
+ * (`/internal/registration-intents`, `/internal/daily-reward`,
+ * `/auth/oidc/callback`).
  */
 export default {
-	fetch(): Response {
-		return new Response("Not Found", { status: 404 });
+	fetch(request, env): Promise<Response> {
+		return handleRequest(request, env);
 	},
 } satisfies ExportedHandler<Env>;

@@ -36,6 +36,14 @@
  *
  * Both history tables are append-only as a hard storage-level constraint,
  * not application convention.
+ *
+ * PR-3 adds `identity_bindings` — mapping each exact `(issuer, subject)`
+ * external identity to one internal User — and `idempotency_records` — the
+ * durable replay table keyed by `(service_principal, idempotency_key)` of
+ * the idempotency specification. Both are storage-level append-only: an
+ * IdentityBinding has no unlink/disable/reassignment transition and an
+ * IdempotencyRecord has no expiry or deletion path in Phase 2, so UPDATE
+ * and DELETE are rejected outright on both tables.
  */
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
@@ -124,5 +132,47 @@ CREATE TRIGGER IF NOT EXISTS ledger_immutable_delete
 BEFORE DELETE ON ledger_transactions
 BEGIN
   SELECT RAISE(ABORT, 'ledger_transactions is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS identity_bindings (
+  issuer TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  created_at INTEGER NOT NULL,
+  UNIQUE (issuer, subject)
+);
+
+CREATE TRIGGER IF NOT EXISTS identity_bindings_immutable_update
+BEFORE UPDATE ON identity_bindings
+BEGIN
+  SELECT RAISE(ABORT, 'identity_bindings is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS identity_bindings_immutable_delete
+BEFORE DELETE ON identity_bindings
+BEGIN
+  SELECT RAISE(ABORT, 'identity_bindings is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS idempotency_records (
+  service_principal TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  fingerprint_version TEXT NOT NULL,
+  request_fingerprint TEXT NOT NULL,
+  stored_result TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  UNIQUE (service_principal, idempotency_key)
+);
+
+CREATE TRIGGER IF NOT EXISTS idempotency_records_immutable_update
+BEFORE UPDATE ON idempotency_records
+BEGIN
+  SELECT RAISE(ABORT, 'idempotency_records is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS idempotency_records_immutable_delete
+BEFORE DELETE ON idempotency_records
+BEGIN
+  SELECT RAISE(ABORT, 'idempotency_records is append-only');
 END;
 `;

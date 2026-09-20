@@ -13,6 +13,8 @@ import {
 } from "../src/application";
 import type {
 	Clock,
+	IdempotencyRepository,
+	IdentityBindingRepository,
 	LedgerRepository,
 	OperationRepository,
 	Synchronous,
@@ -23,6 +25,7 @@ import type {
 } from "../src/ports";
 import {
 	type HistoryRow,
+	type IdempotencyRecord,
 	type LedgerRecord,
 	ledgerId,
 	type OperationRecord,
@@ -30,6 +33,7 @@ import {
 	type Page,
 	persistedActor,
 	persistedActorOf,
+	type UserId,
 	userId,
 	type Wallet,
 	type WalletId,
@@ -43,11 +47,18 @@ type StoredOperation = {
 };
 type StoredLedger = { readonly rowid: number; readonly record: LedgerRecord };
 
-/** The mutable state behind an in-memory `UnitOfWork`. */
+/**
+ * The mutable state behind an in-memory `UnitOfWork`. `identityBindings`
+ * keys an exact `(issuer, subject)` pair and `idempotencyRecords` keys a
+ * `(servicePrincipal, idempotencyKey)` pair — both encoded as
+ * `JSON.stringify([a, b])` so no separator can collide with content.
+ */
 export type InMemoryState = {
 	wallets: Map<WalletId, Wallet>;
 	operationRows: StoredOperation[];
 	ledgerRows: StoredLedger[];
+	identityBindings: Map<string, UserId>;
+	idempotencyRecords: Map<string, IdempotencyRecord>;
 	nextId: number;
 	nextRowid: number;
 };
@@ -58,6 +69,8 @@ export function createInMemoryState(): InMemoryState {
 		wallets: new Map(),
 		operationRows: [],
 		ledgerRows: [],
+		identityBindings: new Map(),
+		idempotencyRecords: new Map(),
 		nextId: 0,
 		nextRowid: 0,
 	};
@@ -182,6 +195,37 @@ function ledgerRepository(state: InMemoryState): LedgerRepository {
 	};
 }
 
+function identityBindingRepository(
+	state: InMemoryState,
+): IdentityBindingRepository {
+	return {
+		findUserIdByExternal(issuer, subject) {
+			return state.identityBindings.get(JSON.stringify([issuer, subject]));
+		},
+	};
+}
+
+function idempotencyRepository(state: InMemoryState): IdempotencyRepository {
+	const key = (principal: string, idempotencyKey: string) =>
+		JSON.stringify([principal, idempotencyKey]);
+	return {
+		find(servicePrincipal, idempotencyKey) {
+			return state.idempotencyRecords.get(
+				key(servicePrincipal, idempotencyKey),
+			);
+		},
+		insert(record) {
+			const k = key(record.servicePrincipal, record.idempotencyKey);
+			if (state.idempotencyRecords.has(k)) {
+				throw new Error(
+					`duplicate idempotency record: ${record.servicePrincipal}/${record.idempotencyKey}`,
+				);
+			}
+			state.idempotencyRecords.set(k, Object.freeze(record));
+		},
+	};
+}
+
 /**
  * Runtime thenable detection: functions are thenable-capable too
  * (`Object.assign(fn, { then() {} })`), so both non-null objects and
@@ -209,6 +253,8 @@ function cloneState(state: InMemoryState): InMemoryState {
 		wallets: new Map(state.wallets),
 		operationRows: [...state.operationRows],
 		ledgerRows: [...state.ledgerRows],
+		identityBindings: new Map(state.identityBindings),
+		idempotencyRecords: new Map(state.idempotencyRecords),
 		nextId: state.nextId,
 		nextRowid: state.nextRowid,
 	};
@@ -218,6 +264,8 @@ function commitState(target: InMemoryState, staging: InMemoryState): void {
 	target.wallets = staging.wallets;
 	target.operationRows = staging.operationRows;
 	target.ledgerRows = staging.ledgerRows;
+	target.identityBindings = staging.identityBindings;
+	target.idempotencyRecords = staging.idempotencyRecords;
 	target.nextId = staging.nextId;
 	target.nextRowid = staging.nextRowid;
 }
@@ -256,14 +304,61 @@ function guardRepository<T extends object>(
 }
 
 /**
+ * Binds the `TransactionContext` itself to the section's lifetime — the
+ * same semantics the production adapter enforces: every property trap
+ * asserts the section is still open, so a context captured outside
+ * `transact` is permanently unusable. Reading `nowMs` or a repository
+ * slot throws exactly like calling a revoked repository method, whether
+ * the section committed or rolled back, and a later section never revives
+ * a stale context.
+ */
+function guardContext(
+	ctx: TransactionContext,
+	assertOpen: () => void,
+): TransactionContext {
+	return new Proxy(ctx, {
+		get(target, property, receiver) {
+			assertOpen();
+			return Reflect.get(target, property, receiver);
+		},
+		set(target, property, value, receiver) {
+			assertOpen();
+			return Reflect.set(target, property, value, receiver);
+		},
+		has(target, property) {
+			assertOpen();
+			return Reflect.has(target, property);
+		},
+		deleteProperty(target, property) {
+			assertOpen();
+			return Reflect.deleteProperty(target, property);
+		},
+		defineProperty(target, property, descriptor) {
+			assertOpen();
+			return Reflect.defineProperty(target, property, descriptor);
+		},
+		getOwnPropertyDescriptor(target, property) {
+			assertOpen();
+			return Reflect.getOwnPropertyDescriptor(target, property);
+		},
+		ownKeys(target) {
+			assertOpen();
+			return Reflect.ownKeys(target);
+		},
+	});
+}
+
+/**
  * An in-memory `UnitOfWork` faithful to the atomic boundary it models:
  * entering a section samples the `Clock` exactly once and freezes the value
  * as `ctx.nowMs` (the temporal-authority specification); `work` runs against a staging copy of the
  * state that replaces the committed state only when `work` returns a
  * non-Promise result — a throw, including the runtime PromiseLike check,
  * discards the staging copy, so no observable state change survives an
- * aborted section. Repository handles are revoked when the section closes,
- * and sections do not nest: composing work shares the open
+ * aborted section. The `TransactionContext` itself and the repository
+ * handles bound to it are revoked when the section closes — reading a
+ * property of a closed context throws, exactly like the production
+ * adapter — and sections do not nest: composing work shares the open
  * `TransactionContext`.
  */
 export function createInMemoryUnitOfWork(
@@ -296,17 +391,30 @@ export function createInMemoryUnitOfWork(
 					wallets: walletRepository(staging),
 					operations: operationRepository(staging),
 					ledger: ledgerRepository(staging),
+					identityBindings: identityBindingRepository(staging),
+					idempotencyRecords: idempotencyRepository(staging),
 				};
 				const wrapped = options?.wrapScope?.(scope) ?? scope;
 				// Per the temporal-authority specification: exactly one clock sample per section, taken before any
 				// caller code runs.
 				const nowMs = clock.nowMs();
-				const ctx: TransactionContext = {
-					nowMs,
-					wallets: guardRepository(wrapped.wallets, assertOpen),
-					operations: guardRepository(wrapped.operations, assertOpen),
-					ledger: guardRepository(wrapped.ledger, assertOpen),
-				};
+				const ctx = guardContext(
+					{
+						nowMs,
+						wallets: guardRepository(wrapped.wallets, assertOpen),
+						operations: guardRepository(wrapped.operations, assertOpen),
+						ledger: guardRepository(wrapped.ledger, assertOpen),
+						identityBindings: guardRepository(
+							wrapped.identityBindings,
+							assertOpen,
+						),
+						idempotencyRecords: guardRepository(
+							wrapped.idempotencyRecords,
+							assertOpen,
+						),
+					},
+					assertOpen,
+				);
 				const result = work(ctx);
 				if (isPromiseLike(result)) {
 					throw new Error(

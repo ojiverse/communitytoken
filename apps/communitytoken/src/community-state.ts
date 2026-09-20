@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import {
 	type Actor,
+	ADMIN_API_PRINCIPAL,
 	type AdminActor,
 	applyEconomicCommand as applyEconomicCommandOperation,
 	type BalanceResult,
@@ -8,22 +9,33 @@ import {
 	type CommunityTokenApplication,
 	createCommunityTokenApplication,
 	type DistributeTokenInput,
+	distributeToken as distributeTokenOperation,
 	type EconomicSelectorCommand,
+	executeIdempotent,
+	getBalance as getBalanceOperation,
+	getTransactionHistory as getTransactionHistoryOperation,
 	type HistoryEntry,
 	type HistoryRequest,
+	type IdempotentExecution,
 	type IssueTokenInput,
+	issueToken as issueTokenOperation,
 	type OperationAccepted,
 	type Page,
 	type PayTreasuryInput,
 	type PayTreasuryResult,
+	TREASURY_SELECTOR,
 	type TransferTokenInput,
 	type TransferTokenResult,
+	transferToken as transferTokenOperation,
 	type UnitOfWork,
+	type UseCaseError,
 	type UseCaseResult,
 	type UserActor,
+	userSelector,
 	type WalletSelector,
 } from "@communitytoken/application";
 import { TREASURY_WALLET_ID } from "@communitytoken/economic-kernel";
+import { DISCORD_ADAPTER_PRINCIPAL, type ServicePrincipal } from "./auth";
 import { SCHEMA } from "./schema";
 import { createStorageUnitOfWork } from "./unit-of-work";
 
@@ -57,6 +69,155 @@ export type CreateUserResult =
 	| { readonly ok: true }
 	| { readonly ok: false; readonly error: string };
 
+/** A JSON-serializable value — the shape every route response body takes. */
+export type JsonValue =
+	| string
+	| number
+	| boolean
+	| null
+	| readonly JsonValue[]
+	| { readonly [key: string]: JsonValue };
+
+/**
+ * A serializable route outcome (issue #4 PR-3): the HTTP status plus JSON
+ * body the Worker forwards verbatim. Expected failures are descriptors,
+ * never throws; unexpected storage/contract/runtime failures throw and the
+ * Worker maps the rejection to `500 internal_error`.
+ */
+export type RouteResponse = {
+	readonly status: number;
+	readonly body: JsonValue;
+};
+
+/** An exact external identity pair, already wire-validated by the Worker. */
+export type ExternalIdentity = {
+	readonly issuer: string;
+	readonly subject: string;
+};
+
+/**
+ * The caller-computed idempotency inputs for `POST /internal/transfers`:
+ * the verbatim `Idempotency-Key` header value plus the fingerprint the
+ * Worker computed (SHA-256 is async, so it cannot run inside the
+ * synchronous section).
+ */
+export type IdempotencyParams = {
+	readonly key: string;
+	readonly fingerprintVersion: string;
+	readonly requestFingerprint: string;
+};
+
+/** Wire input of `POST /internal/history`, wire-validated by the Worker. */
+export type InternalHistoryInput = ExternalIdentity & {
+	readonly cursor?: string;
+	readonly limit?: number;
+};
+
+/** Wire input of `POST /internal/transfers`, wire-validated by the Worker. */
+export type InternalTransferInput = {
+	readonly from: ExternalIdentity;
+	readonly to: ExternalIdentity;
+	readonly amount: number;
+};
+
+/** Wire input of `POST /admin/issuances`, wire-validated by the Worker. */
+export type AdminIssueInput = {
+	readonly amount: number;
+	readonly metadata?: string;
+};
+
+/** Wire input of `POST /admin/distributions`, wire-validated by the Worker. */
+export type AdminDistributeInput = ExternalIdentity & {
+	readonly amount: number;
+	readonly metadata?: string;
+};
+
+/** Query input of `GET /admin/treasury/history`, validated by the Worker. */
+export type AdminTreasuryHistoryInput = {
+	readonly cursor?: string;
+	readonly limit?: number;
+};
+
+/** Builds the fixed error body `{error, error_description}`. */
+function errorDescriptor(
+	status: number,
+	code: string,
+	description: string,
+): RouteResponse {
+	return {
+		status,
+		body: { error: code, error_description: description },
+	};
+}
+
+/**
+ * Maps an expected use-case failure onto the fixed HTTP taxonomy: a
+ * forbidden actor is `403 forbidden`, a kernel rejection is `422` with the
+ * lowercased rejection code, and an input-contract violation is `400` with
+ * the lowercased code (`INVALID_LIMIT` -> `invalid_limit`).
+ */
+function useCaseErrorDescriptor(error: UseCaseError): RouteResponse {
+	switch (error.type) {
+		case "forbidden":
+			return errorDescriptor(403, "forbidden", error.detail);
+		case "rejected":
+			return errorDescriptor(422, error.code.toLowerCase(), error.detail);
+		case "invalid-input":
+			return errorDescriptor(400, error.code.toLowerCase(), error.detail);
+	}
+}
+
+/**
+ * The fixed snake_case history entry shape of the HTTP response contract
+ * (`operations` array elements).
+ */
+function serializeHistoryEntry(entry: HistoryEntry): JsonValue {
+	return {
+		id: entry.id,
+		kind: entry.kind,
+		amount: entry.amount,
+		from_wallet_id: entry.fromWalletId,
+		to_wallet_id: entry.toWalletId,
+		metadata: entry.metadata,
+		actor_kind: entry.actorKind,
+		actor_id: entry.actorId,
+		created_at: entry.createdAt,
+		direction: entry.direction,
+		counterparty: entry.counterparty,
+	};
+}
+
+/** The `{operations, next_cursor}` body of a history route. */
+function historyDescriptor(page: Page<HistoryEntry>): RouteResponse {
+	return {
+		status: 200,
+		body: {
+			operations: page.entries.map(serializeHistoryEntry),
+			next_cursor: page.nextCursor,
+		},
+	};
+}
+
+/**
+ * Rehydrates a stored replay descriptor (`stored_result =
+ * JSON.stringify({status, body})`). A record that fails to parse or lacks
+ * the descriptor shape is an unexpected persistence failure — thrown, so
+ * the Worker maps it to `500 internal_error` rather than recomputing the
+ * mutation.
+ */
+function parseStoredResult(storedResult: string): RouteResponse {
+	const parsed: unknown = JSON.parse(storedResult);
+	if (
+		typeof parsed !== "object" ||
+		parsed === null ||
+		typeof (parsed as { status?: unknown }).status !== "number" ||
+		!("body" in parsed)
+	) {
+		throw new Error("corrupt idempotency stored_result");
+	}
+	return parsed as RouteResponse;
+}
+
 /**
  * The production CommunityState Durable Object (issue #4 PR-2): the single
  * serialization authority for one community's durable economic state.
@@ -68,16 +229,25 @@ export type CreateUserResult =
  * committed data. Schema initialization runs under
  * `blockConcurrencyWhile` before any RPC can execute.
  *
- * The RPC surface has two tiers:
+ * The RPC surface has three tiers:
  *
+ *   - the seven route-facing methods (`internalBalance`,
+ *     `internalHistory`, `internalTransfer`, `adminIssue`,
+ *     `adminDistribute`, `adminTreasuryBalance`, `adminTreasuryHistory`) —
+ *     the PR-3 trusted core API. Each receives the Worker's asserted
+ *     service principal (never bearer bytes), re-checks it against its
+ *     route group as a misroute backstop, owns the complete
+ *     `uow.transact` section — identity resolution, the protected
+ *     mutation, and its idempotency record commit together — and returns
+ *     serializable `{status, body}` descriptors;
  *   - the six product use-case methods (`issueToken`, `distributeToken`,
  *     `transferToken`, `payTreasury`, `getBalance`,
- *     `getTransactionHistory`) — the real production entries that later
- *     PRs wire to routes; each owns an entire `transact` body;
- *   - test-support methods (`createUser`, `applyEconomicCommand`,
- *     `listOperations`, `listLedger`, `issuedAmount`, `totalSupply`) for
- *     the unchanged Phase 1 contract harness — unreachable from the
- *     Worker's `fetch()`, which returns 404 for every request in PR-2.
+ *     `getTransactionHistory`) — the facade entries kept for the contract
+ *     harness; each opens its own section;
+ *   - test-support methods (`createUser`, `createBoundUser`,
+ *     `applyEconomicCommand`, `listOperations`, `listLedger`,
+ *     `issuedAmount`, `totalSupply`) for the unchanged Phase 1 contract
+ *     harness — unreachable from the Worker's `fetch()`.
  */
 export class CommunityState extends DurableObject {
 	private readonly uow: UnitOfWork;
@@ -175,6 +345,313 @@ export class CommunityState extends DurableObject {
 			: this.app.getTransactionHistory(actor as UserActor, selector, request);
 	}
 
+	// ---- Route-facing methods (PR-3 trusted core API) -----------------
+	//
+	// Each method corresponds to one fixed Worker route, receives the
+	// asserted service principal (never a bearer credential), re-checks it
+	// against the route group as a misroute backstop, and owns its complete
+	// serialized section: identity resolution and the protected mutation
+	// — plus its idempotency record for the transfer route — commit
+	// atomically. Expected outcomes are `{status, body}` descriptors;
+	// unexpected failures throw and surface as `500 internal_error`.
+
+	/**
+	 * `POST /internal/balance`: the bound user's own balance under
+	 * self-only visibility — the adapter supplies only the external
+	 * identity; the resolved internal User is the actor.
+	 */
+	internalBalance(
+		principal: ServicePrincipal,
+		input: ExternalIdentity,
+	): RouteResponse {
+		if (principal !== DISCORD_ADAPTER_PRINCIPAL) {
+			return errorDescriptor(
+				403,
+				"forbidden",
+				`route requires the ${DISCORD_ADAPTER_PRINCIPAL} principal`,
+			);
+		}
+		return this.uow.transact((ctx) => {
+			const userId = ctx.identityBindings.findUserIdByExternal(
+				input.issuer,
+				input.subject,
+			);
+			if (userId === undefined) {
+				return errorDescriptor(
+					404,
+					"identity_not_bound",
+					`no identity binding for ${input.issuer}:${input.subject}`,
+				);
+			}
+			const result = getBalanceOperation(
+				ctx,
+				{ kind: "user", userId },
+				userSelector(userId),
+			);
+			return result.ok
+				? { status: 200, body: { balance: result.value.balance } }
+				: useCaseErrorDescriptor(result.error);
+		});
+	}
+
+	/**
+	 * `POST /internal/history`: newest-first cursor-paginated history of
+	 * the bound user's own wallet — same visibility rule as the balance.
+	 */
+	internalHistory(
+		principal: ServicePrincipal,
+		input: InternalHistoryInput,
+	): RouteResponse {
+		if (principal !== DISCORD_ADAPTER_PRINCIPAL) {
+			return errorDescriptor(
+				403,
+				"forbidden",
+				`route requires the ${DISCORD_ADAPTER_PRINCIPAL} principal`,
+			);
+		}
+		return this.uow.transact((ctx) => {
+			const userId = ctx.identityBindings.findUserIdByExternal(
+				input.issuer,
+				input.subject,
+			);
+			if (userId === undefined) {
+				return errorDescriptor(
+					404,
+					"identity_not_bound",
+					`no identity binding for ${input.issuer}:${input.subject}`,
+				);
+			}
+			const result = getTransactionHistoryOperation(
+				ctx,
+				{ kind: "user", userId },
+				userSelector(userId),
+				{
+					cursor: input.cursor ?? null,
+					...(input.limit === undefined ? {} : { limit: input.limit }),
+				},
+			);
+			return result.ok
+				? historyDescriptor(result.value)
+				: useCaseErrorDescriptor(result.error);
+		});
+	}
+
+	/**
+	 * `POST /internal/transfers`: the idempotency-protected P2P transfer.
+	 * The serialized section runs the fixed choreography — idempotency
+	 * lookup, sender resolution, recipient resolution, use case, record
+	 * insert — so a successful transfer and its replay record commit
+	 * atomically. Expected non-mutating failures (unbound identities,
+	 * kernel rejections) record nothing and leave the key retryable.
+	 */
+	internalTransfer(
+		principal: ServicePrincipal,
+		idempotency: IdempotencyParams,
+		input: InternalTransferInput,
+	): RouteResponse {
+		if (principal !== DISCORD_ADAPTER_PRINCIPAL) {
+			return errorDescriptor(
+				403,
+				"forbidden",
+				`route requires the ${DISCORD_ADAPTER_PRINCIPAL} principal`,
+			);
+		}
+		return this.uow.transact((ctx) => {
+			const outcome = executeIdempotent(
+				ctx,
+				{
+					servicePrincipal: principal,
+					idempotencyKey: idempotency.key,
+					fingerprintVersion: idempotency.fingerprintVersion,
+					requestFingerprint: idempotency.requestFingerprint,
+				},
+				(): IdempotentExecution<RouteResponse> => {
+					const sender = ctx.identityBindings.findUserIdByExternal(
+						input.from.issuer,
+						input.from.subject,
+					);
+					if (sender === undefined) {
+						return {
+							record: false,
+							result: errorDescriptor(
+								404,
+								"identity_not_bound",
+								`no identity binding for ${input.from.issuer}:${input.from.subject}`,
+							),
+						};
+					}
+					const recipient = ctx.identityBindings.findUserIdByExternal(
+						input.to.issuer,
+						input.to.subject,
+					);
+					if (recipient === undefined) {
+						return {
+							record: false,
+							result: errorDescriptor(
+								404,
+								"recipient_not_bound",
+								`no identity binding for ${input.to.issuer}:${input.to.subject}`,
+							),
+						};
+					}
+					const result = transferTokenOperation(
+						ctx,
+						{ kind: "user", userId: sender },
+						{ toUserId: recipient, amount: input.amount },
+					);
+					if (!result.ok) {
+						return {
+							record: false,
+							result: useCaseErrorDescriptor(result.error),
+						};
+					}
+					const descriptor: RouteResponse = {
+						status: 200,
+						body: {
+							operation_id: result.value.operationId,
+							from_balance: result.value.fromBalance,
+						},
+					};
+					return {
+						record: true,
+						result: descriptor,
+						storedResult: JSON.stringify(descriptor),
+					};
+				},
+			);
+			switch (outcome.type) {
+				case "replayed":
+					return parseStoredResult(outcome.storedResult);
+				case "conflict":
+					return errorDescriptor(
+						409,
+						"idempotency_key_reuse",
+						"the idempotency key was already used with a different request",
+					);
+				case "executed":
+					return outcome.result;
+			}
+		});
+	}
+
+	/**
+	 * `POST /admin/issuances`: explicit `TOKEN_ISSUANCE` into the
+	 * treasury; the `admin-api` check at the route group is backstopped by
+	 * the use case's `requireAdmin` guard.
+	 */
+	adminIssue(
+		principal: ServicePrincipal,
+		input: AdminIssueInput,
+	): RouteResponse {
+		if (principal !== ADMIN_API_PRINCIPAL) {
+			return errorDescriptor(
+				403,
+				"forbidden",
+				`route requires the ${ADMIN_API_PRINCIPAL} principal`,
+			);
+		}
+		const actor: AdminActor = { kind: "service", principalId: principal };
+		return this.uow.transact((ctx) => {
+			const result = issueTokenOperation(ctx, actor, {
+				amount: input.amount,
+				...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+			});
+			return result.ok
+				? { status: 200, body: { operation_id: result.value.operationId } }
+				: useCaseErrorDescriptor(result.error);
+		});
+	}
+
+	/**
+	 * `POST /admin/distributions`: `DISTRIBUTION` of treasury reserve to
+	 * the user bound to the given external identity — the internal User id
+	 * is never exposed to the operator.
+	 */
+	adminDistribute(
+		principal: ServicePrincipal,
+		input: AdminDistributeInput,
+	): RouteResponse {
+		if (principal !== ADMIN_API_PRINCIPAL) {
+			return errorDescriptor(
+				403,
+				"forbidden",
+				`route requires the ${ADMIN_API_PRINCIPAL} principal`,
+			);
+		}
+		const actor: AdminActor = { kind: "service", principalId: principal };
+		return this.uow.transact((ctx) => {
+			const userId = ctx.identityBindings.findUserIdByExternal(
+				input.issuer,
+				input.subject,
+			);
+			if (userId === undefined) {
+				return errorDescriptor(
+					404,
+					"identity_not_bound",
+					`no identity binding for ${input.issuer}:${input.subject}`,
+				);
+			}
+			const result = distributeTokenOperation(ctx, actor, {
+				toUserId: userId,
+				amount: input.amount,
+				...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+			});
+			return result.ok
+				? { status: 200, body: { operation_id: result.value.operationId } }
+				: useCaseErrorDescriptor(result.error);
+		});
+	}
+
+	/** `GET /admin/treasury/balance`: administrative treasury balance. */
+	adminTreasuryBalance(principal: ServicePrincipal): RouteResponse {
+		if (principal !== ADMIN_API_PRINCIPAL) {
+			return errorDescriptor(
+				403,
+				"forbidden",
+				`route requires the ${ADMIN_API_PRINCIPAL} principal`,
+			);
+		}
+		const actor: AdminActor = { kind: "service", principalId: principal };
+		return this.uow.transact((ctx) => {
+			const result = getBalanceOperation(ctx, actor, TREASURY_SELECTOR);
+			return result.ok
+				? { status: 200, body: { balance: result.value.balance } }
+				: useCaseErrorDescriptor(result.error);
+		});
+	}
+
+	/**
+	 * `GET /admin/treasury/history`: newest-first cursor-paginated
+	 * treasury history, including issuances — administrative inspection.
+	 */
+	adminTreasuryHistory(
+		principal: ServicePrincipal,
+		input: AdminTreasuryHistoryInput,
+	): RouteResponse {
+		if (principal !== ADMIN_API_PRINCIPAL) {
+			return errorDescriptor(
+				403,
+				"forbidden",
+				`route requires the ${ADMIN_API_PRINCIPAL} principal`,
+			);
+		}
+		const actor: AdminActor = { kind: "service", principalId: principal };
+		return this.uow.transact((ctx) => {
+			const result = getTransactionHistoryOperation(
+				ctx,
+				actor,
+				TREASURY_SELECTOR,
+				{
+					cursor: input.cursor ?? null,
+					...(input.limit === undefined ? {} : { limit: input.limit }),
+				},
+			);
+			return result.ok
+				? historyDescriptor(result.value)
+				: useCaseErrorDescriptor(result.error);
+		});
+	}
+
 	// ---- Test-support methods (unreachable from fetch) ----------------
 
 	/**
@@ -206,6 +683,64 @@ export class CommunityState extends DurableObject {
 				crypto.randomUUID(),
 				rawUserId,
 				t,
+				t,
+			);
+			return { ok: true };
+		});
+	}
+
+	/**
+	 * Test-support registration of a bound identity (issue #4 PR-3):
+	 * atomically inserts the User, its single zero-balance user wallet,
+	 * and the IdentityBinding for the exact `(issuer, subject)` pair —
+	 * the state production registration commits in PR-4, seeded verbatim
+	 * here so route-facing resolution can be exercised. Unreachable from
+	 * `fetch`. A duplicate user id or duplicate `(issuer, subject)` pair
+	 * is an expected conflict returned as a value, matching `createUser`.
+	 */
+	createBoundUser(
+		rawUserId: string,
+		issuer: string,
+		subject: string,
+	): CreateUserResult {
+		return this.ctx.storage.transactionSync(() => {
+			const existing = this.ctx.storage.sql
+				.exec("SELECT id FROM users WHERE id = ?", rawUserId)
+				.toArray();
+			if (existing.length > 0) {
+				return { ok: false, error: `user already exists: ${rawUserId}` };
+			}
+			const bound = this.ctx.storage.sql
+				.exec(
+					"SELECT issuer FROM identity_bindings WHERE issuer = ? AND subject = ?",
+					issuer,
+					subject,
+				)
+				.toArray();
+			if (bound.length > 0) {
+				return {
+					ok: false,
+					error: `identity already bound: ${issuer}:${subject}`,
+				};
+			}
+			const t = this.clock.nowMs();
+			this.ctx.storage.sql.exec(
+				"INSERT INTO users (id, created_at) VALUES (?, ?)",
+				rawUserId,
+				t,
+			);
+			this.ctx.storage.sql.exec(
+				"INSERT INTO wallets (id, kind, owner_user_id, balance, created_at, updated_at) VALUES (?, 'user', ?, 0, ?, ?)",
+				crypto.randomUUID(),
+				rawUserId,
+				t,
+				t,
+			);
+			this.ctx.storage.sql.exec(
+				"INSERT INTO identity_bindings (issuer, subject, user_id, created_at) VALUES (?, ?, ?, ?)",
+				issuer,
+				subject,
+				rawUserId,
 				t,
 			);
 			return { ok: true };

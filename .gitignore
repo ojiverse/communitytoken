@@ -93,6 +93,9 @@ web_modules/
 .env.production.local
 .env.local
 
+# Wrangler local secrets (see apps/communitytoken/.dev.vars.example)
+.dev.vars
+
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 .parcel-cache

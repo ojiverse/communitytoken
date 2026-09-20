@@ -7,9 +7,11 @@ economic rules — the economic decision boundary remains
 `@communitytoken/economic-kernel`.
 
 Trusted surfaces (`/internal/*` and `/admin/*` in the authentication/delegation specification) resolve an
-`Actor` and invoke `CommunityTokenApplication` methods. External-identity
-resolution, credential checks, and idempotency are boundary concerns owned by
-later PRs and deliberately absent here.
+`Actor` and invoke `CommunityTokenApplication` methods or the exported
+composable operations. Bearer-credential verification stays at the Worker
+boundary; external-identity resolution and idempotency are composable
+application ports (`IdentityBindingRepository`, `IdempotencyRepository`,
+`executeIdempotent`) that run inside the caller's serialized section.
 
 ## Boundary invariant
 
@@ -36,6 +38,18 @@ section as the economic mutation it protects. Sections do not nest: composed
 operations share the one open context, and opening `transact` inside an open
 section is a contract violation.
 
+`executeIdempotent(ctx, keyInfo, execute)` is the composable idempotency
+choreography for a protected mutation (the idempotency specification):
+inside the caller's open section it looks up the record under
+`(servicePrincipal, idempotencyKey)`, replays the stored result verbatim
+when `fingerprintVersion` and `requestFingerprint` match, reports a
+conflict when they differ, and otherwise runs `execute()`. A recordable
+outcome (`record: true`) inserts the serialized result before returning;
+an expected non-mutating failure (`record: false`) leaves the key
+unconsumed and retryable. A throw — from `execute` or the record insert —
+propagates and rolls the whole section back, so the record and the
+mutation it guards commit atomically.
+
 ## Ports
 
 - `Clock` — epoch-millisecond time authority consumed by the `UnitOfWork`
@@ -49,6 +63,13 @@ section is a contract violation.
   - `OperationRepository` — `EconomicOperation` append plus the operation+ledger
     history join (newest-first, opaque cursor).
   - `LedgerRepository` — append-only `LedgerTransaction` writes.
+  - `IdentityBindingRepository` — exact `(issuer, subject)` → `UserId`
+    lookup (PR-3). Binding creation is registration-owned (PR-4); the port
+    exposes no insert, unlink, or reassignment path.
+  - `IdempotencyRepository` — `find`/`insert` of `IdempotencyRecord`s keyed
+    by `(servicePrincipal, idempotencyKey)` (PR-3). Records are append-only;
+    a duplicate insert throws so a second commit can never overwrite the
+    first replay record.
 - `TransactionContext` — a `TransactionScope` plus `nowMs`, the section's
   single frozen `now_ms` sampled once at entry before `work` runs (the temporal-authority specification). Context and repository handles are revoked permanently when their
   owning section closes: a captured handle cannot read or write after
@@ -105,7 +126,5 @@ wallet's owning user id — the user's own id for a self-transfer (the actor/vis
 
 | Port/capability | Arriving PR |
 | --- | --- |
-| `IdentityBinding` repository + external-identity resolution | PR-3 |
-| `IdempotencyRecord` repository + fingerprint v1 | PR-3 |
 | `User`/`RegistrationIntent` repositories, `RandomSource`, OIDC RP port | PR-4 |
 | `DailyRewardClaim` repository + `DAILY_REWARD` kind | PR-5 |

@@ -1,0 +1,6 @@
+# Local-development secrets for `wrangler dev` (copied to `.dev.vars`,
+# which is git-ignored). Placeholders only — real values are provisioned
+# as Worker secrets. The two tokens must differ: an ambiguous credential
+# fails closed.
+ADMIN_API_TOKEN=replace-with-local-admin-token
+DISCORD_ADAPTER_SERVICE_TOKEN=replace-with-local-discord-adapter-token

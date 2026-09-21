@@ -32,9 +32,11 @@ Formatting and linting use Biome; secrets scanning uses secretlint.
 - [Economic Model](./docs/economic-model.md) — compatibility entry point into the economic specifications
 - [Engineering Principles](./docs/engineering-principles/README.md)
 - [Design Policies](./docs/design-policy/README.md)
+- [Architecture Decision Records](./docs/adr/README.md) — durable rationale for architectural choices
 
-Implementation sequencing, concrete runtime choices, deployment facts, and feature delivery details
-remain in the relevant GitHub issues rather than the normative specifications.
+Normative semantics and invariants live in the specifications. ADRs preserve architectural rationale
+that should remain discoverable beyond a design thread. Implementation sequencing, concrete runtime
+choices, deployment facts, and feature delivery details remain in the relevant GitHub issues.
 
 ## LICENSE
 

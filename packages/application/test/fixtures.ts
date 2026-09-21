@@ -7,7 +7,7 @@ import type {
 } from "../src/types";
 import { ADMIN_API_PRINCIPAL, userId } from "../src/types";
 
-/** The actor/visibility specification administrative actor bound to the `/admin/*` boundary in tests. */
+/** The actor/visibility specification administrative actor bound to the `/api/v1/admin/*` boundary in tests. */
 export const ADMIN: AdminActor = {
 	kind: "service",
 	principalId: ADMIN_API_PRINCIPAL,

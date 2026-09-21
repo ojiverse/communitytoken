@@ -17,28 +17,38 @@ SQLite-backed storage           (ctx.storage.sql)
 
 The route set is exact `"METHOD pathname"` pairs — no trailing-slash or
 case normalization, and a wrong method on a known path is `404`. Routes
-owned by later PRs (`POST /internal/registration-intents`,
-`POST /internal/daily-reward`, `GET /auth/oidc/callback`) return `404`
-until their owners land.
+owned by later PRs (`POST /api/v1/registration-intents`,
+`POST /api/v1/daily-reward`, `GET /auth/oidc/callback`,
+`POST /interactions`) return `404` until their owners land.
+
+The namespace follows ADR-0002 (`docs/adr/0002-api-namespace.md`): the
+versioned command/query application API lives under `/api/v1/*`, its
+administrative-capability subset under `/api/v1/admin/*`, and
+protocol-ingress endpoints stay outside the API namespace.
 
 | Route | Group | DO method |
 | --- | --- | --- |
-| `POST /internal/balance` | internal | `internalBalance` |
-| `POST /internal/history` | internal | `internalHistory` |
-| `POST /internal/transfers` | internal | `internalTransfer` (idempotent) |
-| `POST /admin/issuances` | admin | `adminIssue` |
-| `POST /admin/distributions` | admin | `adminDistribute` |
-| `GET /admin/treasury/balance` | admin | `adminTreasuryBalance` |
-| `GET /admin/treasury/history` | admin | `adminTreasuryHistory` |
+| `POST /api/v1/balance` | internal | `internalBalance` |
+| `POST /api/v1/history` | internal | `internalHistory` |
+| `POST /api/v1/transfers` | internal | `internalTransfer` (idempotent) |
+| `POST /api/v1/admin/issuances` | admin | `adminIssue` |
+| `POST /api/v1/admin/distributions` | admin | `adminDistribute` |
+| `GET /api/v1/admin/treasury/balance` | admin | `adminTreasuryBalance` |
+| `GET /api/v1/admin/treasury/history` | admin | `adminTreasuryHistory` |
 
 ## Authentication boundary
 
 Two bearer credentials, provisioned as Worker secrets:
 
 - `DISCORD_ADAPTER_SERVICE_TOKEN` asserts the `discord-adapter`
-  principal, authorized for `/internal/*` routes.
+  principal, authorized for the non-admin `/api/v1/*` routes.
 - `ADMIN_API_TOKEN` asserts the `admin-api` principal, authorized for
-  `/admin/*` routes.
+  `/api/v1/admin/*` routes.
+
+Authorization is explicit per-route group metadata, never pathname
+prefix matching: `/api/v1/admin/*` is lexically inside `/api/v1/*` but a
+distinct authorization group, and the pathname itself is descriptive,
+not a security boundary (ADR-0002).
 
 The Worker consumes the credential; route-facing DO methods receive only
 the asserted principal and re-check it against their route group as a
@@ -54,7 +64,7 @@ both sides and compares equal-length digests with
 Route match → authenticate → authorize → `Content-Type: application/json`
 (415) → JSON object body and exact wire shape (400 `invalid_request`;
 unknown fields are rejected, including nested ones) → `Idempotency-Key`
-on `POST /internal/transfers` (400 `idempotency_key_required`, length
+on `POST /api/v1/transfers` (400 `idempotency_key_required`, length
 1..255, value verbatim) → fingerprint v1 = SHA-256 over
 `"communitytoken-idempotency-v1\n" + METHOD + "\n" + path + "\n" +
 RFC8785_JCS(parsed_body)` (400 on canonicalization failure) → DO call.

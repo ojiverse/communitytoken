@@ -6,7 +6,7 @@ visibility policy. It owns **no** storage, no platform/runtime types, and no
 economic rules — the economic decision boundary remains
 `@communitytoken/economic-kernel`.
 
-Trusted surfaces (`/internal/*` and `/admin/*` in the authentication/delegation specification) resolve an
+Trusted surfaces (`/api/v1/*` and `/api/v1/admin/*` in the authentication/delegation specification) resolve an
 `Actor` and invoke `CommunityTokenApplication` methods or the exported
 composable operations. Bearer-credential verification stays at the Worker
 boundary; external-identity resolution and idempotency are composable

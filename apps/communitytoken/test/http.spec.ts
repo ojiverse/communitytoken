@@ -95,7 +95,7 @@ async function idempotencyRecordCount(key: string): Promise<number> {
 
 describe("routing", () => {
 	it("returns 404 for unknown paths — route match precedes authentication", async () => {
-		for (const path of ["/", "/health", "/internal/unknown", "/admin/x"]) {
+		for (const path of ["/", "/health", "/api/v1/unknown", "/api/v1/admin/x"]) {
 			expect((await call(path)).status).toBe(404);
 			expect(await errorCode(await call(path))).toBe("not_found");
 		}
@@ -103,8 +103,9 @@ describe("routing", () => {
 
 	it("returns 404 for routes owned by later PRs, even authenticated", async () => {
 		for (const path of [
-			"/internal/registration-intents",
-			"/internal/daily-reward",
+			"/api/v1/registration-intents",
+			"/api/v1/daily-reward",
+			"/interactions",
 		]) {
 			expect((await call(path, { token: DISCORD_TOKEN() })).status).toBe(404);
 		}
@@ -114,20 +115,34 @@ describe("routing", () => {
 		expect(callback.status).toBe(404);
 	});
 
+	it("returns 404 for every former /internal/* and /admin/* route — no aliases", async () => {
+		for (const [method, path] of [
+			["POST", "/internal/balance"],
+			["POST", "/internal/history"],
+			["POST", "/internal/transfers"],
+			["POST", "/admin/issuances"],
+			["POST", "/admin/distributions"],
+			["GET", "/admin/treasury/balance"],
+			["GET", "/admin/treasury/history"],
+		] as const) {
+			const response = await call(path, { method, token: DISCORD_TOKEN() });
+			expect(response.status).toBe(404);
+			expect(await errorCode(response)).toBe("not_found");
+		}
+	});
+
 	it("returns 404 for the wrong method on a known path and for non-exact paths", async () => {
-		expect((await call("/internal/balance", { method: "GET" })).status).toBe(
-			404,
-		);
+		expect((await call("/api/v1/balance", { method: "GET" })).status).toBe(404);
 		expect(
 			(
-				await call("/admin/treasury/balance", {
+				await call("/api/v1/admin/treasury/balance", {
 					method: "POST",
 					token: ADMIN_TOKEN(),
 				})
 			).status,
 		).toBe(404);
 		// No trailing-slash or case normalization.
-		for (const path of ["/internal/balance/", "/Internal/balance"]) {
+		for (const path of ["/api/v1/balance/", "/Api/v1/balance"]) {
 			expect((await call(path, { token: DISCORD_TOKEN() })).status).toBe(404);
 		}
 	});
@@ -135,26 +150,24 @@ describe("routing", () => {
 
 describe("authentication and route-group authorization", () => {
 	it("401s missing, malformed, and non-matching credentials", async () => {
-		expect((await call("/internal/balance")).status).toBe(401);
+		expect((await call("/api/v1/balance")).status).toBe(401);
 		expect(
 			(
-				await call("/internal/balance", {
+				await call("/api/v1/balance", {
 					headers: { Authorization: "Basic abc" },
 				})
 			).status,
 		).toBe(401);
 		expect(
-			(await call("/internal/balance", { token: "wrong-token" })).status,
+			(await call("/api/v1/balance", { token: "wrong-token" })).status,
 		).toBe(401);
-		expect(await errorCode(await call("/internal/balance"))).toBe(
-			"unauthorized",
-		);
+		expect(await errorCode(await call("/api/v1/balance"))).toBe("unauthorized");
 	});
 
 	it("403s an authenticated principal on the wrong route group", async () => {
 		expect(
 			(
-				await call("/admin/treasury/balance", {
+				await call("/api/v1/admin/treasury/balance", {
 					method: "GET",
 					token: DISCORD_TOKEN(),
 				})
@@ -162,7 +175,7 @@ describe("authentication and route-group authorization", () => {
 		).toBe(403);
 		expect(
 			(
-				await call("/admin/issuances", {
+				await call("/api/v1/admin/issuances", {
 					token: DISCORD_TOKEN(),
 					body: { amount: 1 },
 				})
@@ -170,7 +183,7 @@ describe("authentication and route-group authorization", () => {
 		).toBe(403);
 		expect(
 			(
-				await call("/internal/balance", {
+				await call("/api/v1/balance", {
 					token: ADMIN_TOKEN(),
 					body: { issuer: ISSUER, subject: "x" },
 				})
@@ -178,7 +191,7 @@ describe("authentication and route-group authorization", () => {
 		).toBe(403);
 		expect(
 			await errorCode(
-				await call("/internal/balance", {
+				await call("/api/v1/balance", {
 					token: ADMIN_TOKEN(),
 					body: { issuer: ISSUER, subject: "x" },
 				}),
@@ -189,7 +202,7 @@ describe("authentication and route-group authorization", () => {
 
 describe("wire validation", () => {
 	it("415s non-JSON media types on JSON routes", async () => {
-		const response = await SELF.fetch(`${ORIGIN}/internal/balance`, {
+		const response = await SELF.fetch(`${ORIGIN}/api/v1/balance`, {
 			method: "POST",
 			headers: {
 				Authorization: `Bearer ${DISCORD_TOKEN()}`,
@@ -200,7 +213,7 @@ describe("wire validation", () => {
 		expect(response.status).toBe(415);
 		expect(await errorCode(response)).toBe("unsupported_media_type");
 		// application/json with a charset parameter is still JSON.
-		const withCharset = await SELF.fetch(`${ORIGIN}/internal/balance`, {
+		const withCharset = await SELF.fetch(`${ORIGIN}/api/v1/balance`, {
 			method: "POST",
 			headers: {
 				Authorization: `Bearer ${DISCORD_TOKEN()}`,
@@ -213,7 +226,7 @@ describe("wire validation", () => {
 
 	it("400s malformed JSON, non-object bodies, and missing fields", async () => {
 		for (const rawBody of ["{", "[]", '"x"', "null", "5"]) {
-			const response = await call("/internal/balance", {
+			const response = await call("/api/v1/balance", {
 				token: DISCORD_TOKEN(),
 				rawBody,
 			});
@@ -221,20 +234,20 @@ describe("wire validation", () => {
 			expect(await errorCode(response)).toBe("invalid_request");
 		}
 		expect(
-			(await call("/internal/balance", { token: DISCORD_TOKEN(), body: {} }))
+			(await call("/api/v1/balance", { token: DISCORD_TOKEN(), body: {} }))
 				.status,
 		).toBe(400);
 	});
 
 	it("rejects unknown fields, including nested objects", async () => {
-		const top = await call("/internal/balance", {
+		const top = await call("/api/v1/balance", {
 			token: DISCORD_TOKEN(),
 			body: { issuer: ISSUER, subject: "s", extra: 1 },
 		});
 		expect(top.status).toBe(400);
 		expect(await errorCode(top)).toBe("invalid_request");
 
-		const nested = await call("/internal/transfers", {
+		const nested = await call("/api/v1/transfers", {
 			token: DISCORD_TOKEN(),
 			headers: { "Idempotency-Key": "k-nested" },
 			body: {
@@ -253,14 +266,14 @@ describe("wire validation", () => {
 			{ issuer: ISSUER, subject: 3 },
 			{ issuer: ISSUER, subject: "s", amount: "5" },
 		]) {
-			const response = await call("/internal/balance", {
+			const response = await call("/api/v1/balance", {
 				token: DISCORD_TOKEN(),
 				body,
 			});
 			expect(response.status).toBe(400);
 			expect(await errorCode(response)).toBe("invalid_request");
 		}
-		const metadata = await call("/admin/issuances", {
+		const metadata = await call("/api/v1/admin/issuances", {
 			token: ADMIN_TOKEN(),
 			body: { amount: 5, metadata: 42 },
 		});
@@ -270,7 +283,7 @@ describe("wire validation", () => {
 
 	it("rejects invalid limits and cursors with their own codes", async () => {
 		for (const limit of [0, 101, 1.5, "50"]) {
-			const response = await call("/internal/history", {
+			const response = await call("/api/v1/history", {
 				token: DISCORD_TOKEN(),
 				body: { issuer: ISSUER, subject: "s", limit },
 			});
@@ -278,7 +291,7 @@ describe("wire validation", () => {
 			expect(await errorCode(response)).toBe("invalid_limit");
 		}
 		for (const cursor of ["abc", "-1", "1.5", 7]) {
-			const response = await call("/internal/history", {
+			const response = await call("/api/v1/history", {
 				token: DISCORD_TOKEN(),
 				body: { issuer: ISSUER, subject: "s", cursor },
 			});
@@ -288,7 +301,7 @@ describe("wire validation", () => {
 		// The GET route validates the same grammar from query parameters.
 		expect(
 			(
-				await call("/admin/treasury/history?limit=abc", {
+				await call("/api/v1/admin/treasury/history?limit=abc", {
 					method: "GET",
 					token: ADMIN_TOKEN(),
 				})
@@ -296,7 +309,7 @@ describe("wire validation", () => {
 		).toBe(400);
 		expect(
 			(
-				await call("/admin/treasury/history?cursor=!!", {
+				await call("/api/v1/admin/treasury/history?cursor=!!", {
 					method: "GET",
 					token: ADMIN_TOKEN(),
 				})
@@ -307,7 +320,7 @@ describe("wire validation", () => {
 	it("ignores query parameters on POST routes", async () => {
 		const subject = `q-${crypto.randomUUID()}`;
 		await seedBound(`u-${subject}`, subject);
-		const response = await call("/internal/balance?ignored=yes", {
+		const response = await call("/api/v1/balance?ignored=yes", {
 			token: DISCORD_TOKEN(),
 			body: { issuer: ISSUER, subject },
 		});
@@ -316,16 +329,16 @@ describe("wire validation", () => {
 });
 
 describe("idempotency-key validation", () => {
-	it("requires a 1..255 Idempotency-Key on POST /internal/transfers", async () => {
+	it("requires a 1..255 Idempotency-Key on POST /api/v1/transfers", async () => {
 		const body = transferBody("a", "b", 1);
-		const missing = await call("/internal/transfers", {
+		const missing = await call("/api/v1/transfers", {
 			token: DISCORD_TOKEN(),
 			body,
 		});
 		expect(missing.status).toBe(400);
 		expect(await errorCode(missing)).toBe("idempotency_key_required");
 
-		const tooLong = await call("/internal/transfers", {
+		const tooLong = await call("/api/v1/transfers", {
 			token: DISCORD_TOKEN(),
 			headers: { "Idempotency-Key": "x".repeat(256) },
 			body,
@@ -337,13 +350,13 @@ describe("idempotency-key validation", () => {
 	it("ignores the header on read and admin routes", async () => {
 		const subject = `hdr-${crypto.randomUUID()}`;
 		await seedBound(`u-${subject}`, subject);
-		const response = await call("/internal/balance", {
+		const response = await call("/api/v1/balance", {
 			token: DISCORD_TOKEN(),
 			headers: { "Idempotency-Key": "not-required" },
 			body: { issuer: ISSUER, subject },
 		});
 		expect(response.status).toBe(200);
-		const admin = await call("/admin/issuances", {
+		const admin = await call("/api/v1/admin/issuances", {
 			token: ADMIN_TOKEN(),
 			headers: { "Idempotency-Key": "ignored" },
 			body: { amount: 1 },
@@ -352,18 +365,18 @@ describe("idempotency-key validation", () => {
 	});
 });
 
-describe("internal routes", () => {
+describe("application routes", () => {
 	it("returns the bound user's balance and 404s an unbound identity", async () => {
 		const subject = `bal-${crypto.randomUUID()}`;
 		await seedBound(`u-${subject}`, subject);
-		const response = await call("/internal/balance", {
+		const response = await call("/api/v1/balance", {
 			token: DISCORD_TOKEN(),
 			body: { issuer: ISSUER, subject },
 		});
 		expect(response.status).toBe(200);
 		expect(await response.json()).toEqual({ balance: 0 });
 
-		const unbound = await call("/internal/balance", {
+		const unbound = await call("/api/v1/balance", {
 			token: DISCORD_TOKEN(),
 			body: { issuer: ISSUER, subject: `nobody-${crypto.randomUUID()}` },
 		});
@@ -376,21 +389,21 @@ describe("internal routes", () => {
 		const bob = `hb-${crypto.randomUUID()}`;
 		await seedBound(`u-${alice}`, alice);
 		await seedBound(`u-${bob}`, bob);
-		await call("/admin/issuances", {
+		await call("/api/v1/admin/issuances", {
 			token: ADMIN_TOKEN(),
 			body: { amount: 50 },
 		});
-		await call("/admin/distributions", {
+		await call("/api/v1/admin/distributions", {
 			token: ADMIN_TOKEN(),
 			body: { issuer: ISSUER, subject: alice, amount: 20 },
 		});
-		await call("/internal/transfers", {
+		await call("/api/v1/transfers", {
 			token: DISCORD_TOKEN(),
 			headers: { "Idempotency-Key": `h-${alice}` },
 			body: transferBody(alice, bob, 5),
 		});
 
-		const history = await call("/internal/history", {
+		const history = await call("/api/v1/history", {
 			token: DISCORD_TOKEN(),
 			body: { issuer: ISSUER, subject: alice },
 		});
@@ -418,7 +431,7 @@ describe("internal routes", () => {
 			"TOKEN_ISSUANCE",
 		);
 
-		const unbound = await call("/internal/history", {
+		const unbound = await call("/api/v1/history", {
 			token: DISCORD_TOKEN(),
 			body: { issuer: ISSUER, subject: `none-${crypto.randomUUID()}` },
 		});
@@ -431,23 +444,23 @@ describe("internal routes", () => {
 		const other = `po-${crypto.randomUUID()}`;
 		await seedBound(`u-${subject}`, subject);
 		await seedBound(`u-${other}`, other);
-		await call("/admin/issuances", {
+		await call("/api/v1/admin/issuances", {
 			token: ADMIN_TOKEN(),
 			body: { amount: 30 },
 		});
-		await call("/admin/distributions", {
+		await call("/api/v1/admin/distributions", {
 			token: ADMIN_TOKEN(),
 			body: { issuer: ISSUER, subject, amount: 30 },
 		});
 		for (const [i, amount] of [1, 2, 3].entries()) {
-			await call("/internal/transfers", {
+			await call("/api/v1/transfers", {
 				token: DISCORD_TOKEN(),
 				headers: { "Idempotency-Key": `pg-${subject}-${i}` },
 				body: transferBody(subject, other, amount),
 			});
 		}
 
-		const first = await call("/internal/history", {
+		const first = await call("/api/v1/history", {
 			token: DISCORD_TOKEN(),
 			body: { issuer: ISSUER, subject, limit: 2 },
 		});
@@ -458,7 +471,7 @@ describe("internal routes", () => {
 		expect(page1.operations.map((o) => o.amount)).toEqual([3, 2]);
 		expect(page1.next_cursor).not.toBeNull();
 
-		const rest = await call("/internal/history", {
+		const rest = await call("/api/v1/history", {
 			token: DISCORD_TOKEN(),
 			body: {
 				issuer: ISSUER,
@@ -480,14 +493,14 @@ describe("admin routes", () => {
 	it("issues into the treasury and reports the treasury balance", async () => {
 		// The "community" DO is shared within this file, so the treasury
 		// accumulates — assert the delta, not an absolute balance.
-		const before = await call("/admin/treasury/balance", {
+		const before = await call("/api/v1/admin/treasury/balance", {
 			method: "GET",
 			token: ADMIN_TOKEN(),
 		});
 		const beforeBalance = ((await before.json()) as { balance: number })
 			.balance;
 
-		const issue = await call("/admin/issuances", {
+		const issue = await call("/api/v1/admin/issuances", {
 			token: ADMIN_TOKEN(),
 			body: { amount: 100, metadata: "seed" },
 		});
@@ -495,7 +508,7 @@ describe("admin routes", () => {
 		const issued = (await issue.json()) as { operation_id: string };
 		expect(typeof issued.operation_id).toBe("string");
 
-		const after = await call("/admin/treasury/balance", {
+		const after = await call("/api/v1/admin/treasury/balance", {
 			method: "GET",
 			token: ADMIN_TOKEN(),
 		});
@@ -506,7 +519,7 @@ describe("admin routes", () => {
 	});
 
 	it("422s a kernel rejection (invalid amount) as its lowercased code", async () => {
-		const response = await call("/admin/issuances", {
+		const response = await call("/api/v1/admin/issuances", {
 			token: ADMIN_TOKEN(),
 			body: { amount: 0 },
 		});
@@ -517,17 +530,17 @@ describe("admin routes", () => {
 	it("distributes to a bound user and 404s an unbound one", async () => {
 		const subject = `dist-${crypto.randomUUID()}`;
 		await seedBound(`u-${subject}`, subject);
-		await call("/admin/issuances", {
+		await call("/api/v1/admin/issuances", {
 			token: ADMIN_TOKEN(),
 			body: { amount: 10 },
 		});
-		const okResponse = await call("/admin/distributions", {
+		const okResponse = await call("/api/v1/admin/distributions", {
 			token: ADMIN_TOKEN(),
 			body: { issuer: ISSUER, subject, amount: 10, metadata: "grant" },
 		});
 		expect(okResponse.status).toBe(200);
 
-		const unbound = await call("/admin/distributions", {
+		const unbound = await call("/api/v1/admin/distributions", {
 			token: ADMIN_TOKEN(),
 			body: {
 				issuer: ISSUER,
@@ -541,7 +554,7 @@ describe("admin routes", () => {
 		// Treasury history is newest-first and includes issuances; the
 		// shared instance accumulates other tests' operations, so assert the
 		// newest entry is this test's distribution.
-		const history = await call("/admin/treasury/history", {
+		const history = await call("/api/v1/admin/treasury/history", {
 			method: "GET",
 			token: ADMIN_TOKEN(),
 		});
@@ -567,11 +580,11 @@ describe("internalTransfer idempotency", () => {
 		const b = `tb-${crypto.randomUUID()}`;
 		await seedBound(`u-${a}`, a);
 		await seedBound(`u-${b}`, b);
-		await call("/admin/issuances", {
+		await call("/api/v1/admin/issuances", {
 			token: ADMIN_TOKEN(),
 			body: { amount: 100 },
 		});
-		await call("/admin/distributions", {
+		await call("/api/v1/admin/distributions", {
 			token: ADMIN_TOKEN(),
 			body: { issuer: ISSUER, subject: a, amount: 100 },
 		});
@@ -583,7 +596,7 @@ describe("internalTransfer idempotency", () => {
 		const key = `idem-${crypto.randomUUID()}`;
 		const body = transferBody(a, b, 25);
 
-		const first = await call("/internal/transfers", {
+		const first = await call("/api/v1/transfers", {
 			token: DISCORD_TOKEN(),
 			headers: { "Idempotency-Key": key },
 			body,
@@ -600,14 +613,14 @@ describe("internalTransfer idempotency", () => {
 
 		// A byte-identical replay returns the stored descriptor without
 		// executing the mutation a second time.
-		const replay = await call("/internal/transfers", {
+		const replay = await call("/api/v1/transfers", {
 			token: DISCORD_TOKEN(),
 			headers: { "Idempotency-Key": key },
 			body,
 		});
 		expect(replay.status).toBe(200);
 		expect(await replay.json()).toEqual(firstBody);
-		const balance = await call("/internal/balance", {
+		const balance = await call("/api/v1/balance", {
 			token: DISCORD_TOKEN(),
 			body: { issuer: ISSUER, subject: a },
 		});
@@ -617,12 +630,12 @@ describe("internalTransfer idempotency", () => {
 	it("409s a reused key with a different fingerprint", async () => {
 		const { a, b } = await seedPair();
 		const key = `conflict-${crypto.randomUUID()}`;
-		await call("/internal/transfers", {
+		await call("/api/v1/transfers", {
 			token: DISCORD_TOKEN(),
 			headers: { "Idempotency-Key": key },
 			body: transferBody(a, b, 10),
 		});
-		const conflict = await call("/internal/transfers", {
+		const conflict = await call("/api/v1/transfers", {
 			token: DISCORD_TOKEN(),
 			headers: { "Idempotency-Key": key },
 			body: transferBody(a, b, 11),
@@ -636,7 +649,7 @@ describe("internalTransfer idempotency", () => {
 		const key = `retry-${crypto.randomUUID()}`;
 
 		// Unbound recipient — an expected failure that consumes nothing.
-		const failed = await call("/internal/transfers", {
+		const failed = await call("/api/v1/transfers", {
 			token: DISCORD_TOKEN(),
 			headers: { "Idempotency-Key": key },
 			body: transferBody(a, `ghost-${crypto.randomUUID()}`, 5),
@@ -646,7 +659,7 @@ describe("internalTransfer idempotency", () => {
 		expect(await idempotencyRecordCount(key)).toBe(0);
 
 		// A kernel rejection leaves no record either.
-		const rejected = await call("/internal/transfers", {
+		const rejected = await call("/api/v1/transfers", {
 			token: DISCORD_TOKEN(),
 			headers: { "Idempotency-Key": key },
 			body: transferBody(a, b, 9_999_999),
@@ -656,7 +669,7 @@ describe("internalTransfer idempotency", () => {
 		expect(await idempotencyRecordCount(key)).toBe(0);
 
 		// The same key now executes normally.
-		const retried = await call("/internal/transfers", {
+		const retried = await call("/api/v1/transfers", {
 			token: DISCORD_TOKEN(),
 			headers: { "Idempotency-Key": key },
 			body: transferBody(a, b, 5),
@@ -667,7 +680,7 @@ describe("internalTransfer idempotency", () => {
 
 	it("404s an unbound sender and rejects a canonicalization failure", async () => {
 		const { a } = await seedPair();
-		const unboundSender = await call("/internal/transfers", {
+		const unboundSender = await call("/api/v1/transfers", {
 			token: DISCORD_TOKEN(),
 			headers: { "Idempotency-Key": `s-${crypto.randomUUID()}` },
 			body: transferBody(`ghost-${crypto.randomUUID()}`, a, 5),
@@ -675,7 +688,7 @@ describe("internalTransfer idempotency", () => {
 		expect(unboundSender.status).toBe(404);
 		expect(await errorCode(unboundSender)).toBe("identity_not_bound");
 
-		const loneSurrogate = await call("/internal/transfers", {
+		const loneSurrogate = await call("/api/v1/transfers", {
 			token: DISCORD_TOKEN(),
 			headers: { "Idempotency-Key": `ls-${crypto.randomUUID()}` },
 			rawBody: `{"from":{"issuer":"i","subject":"\\ud800"},"to":{"issuer":"i","subject":"t"},"amount":1}`,
@@ -687,7 +700,7 @@ describe("internalTransfer idempotency", () => {
 
 describe("non-finite amounts", () => {
 	it("400s a parsed-JSON number that is not finite, on every amount-bearing route", async () => {
-		const transfer = await call("/internal/transfers", {
+		const transfer = await call("/api/v1/transfers", {
 			token: DISCORD_TOKEN(),
 			headers: { "Idempotency-Key": `nf-${crypto.randomUUID()}` },
 			rawBody:
@@ -696,14 +709,14 @@ describe("non-finite amounts", () => {
 		expect(transfer.status).toBe(400);
 		expect(await errorCode(transfer)).toBe("invalid_request");
 
-		const issuance = await call("/admin/issuances", {
+		const issuance = await call("/api/v1/admin/issuances", {
 			token: ADMIN_TOKEN(),
 			rawBody: '{"amount":1e400}',
 		});
 		expect(issuance.status).toBe(400);
 		expect(await errorCode(issuance)).toBe("invalid_request");
 
-		const distribution = await call("/admin/distributions", {
+		const distribution = await call("/api/v1/admin/distributions", {
 			token: ADMIN_TOKEN(),
 			rawBody: '{"issuer":"i","subject":"s","amount":-1e400}',
 		});
@@ -719,7 +732,7 @@ describe("non-finite amounts", () => {
 			'{"amount":1.5}',
 			'{"amount":9007199254740992}',
 		]) {
-			const response = await call("/admin/issuances", {
+			const response = await call("/api/v1/admin/issuances", {
 				token: ADMIN_TOKEN(),
 				rawBody,
 			});
@@ -729,7 +742,7 @@ describe("non-finite amounts", () => {
 
 		const { a, b } = await seedTransferPair();
 		for (const amount of [0, 1.5]) {
-			const response = await call("/internal/transfers", {
+			const response = await call("/api/v1/transfers", {
 				token: DISCORD_TOKEN(),
 				headers: { "Idempotency-Key": `nf-${crypto.randomUUID()}` },
 				body: transferBody(a, b, amount),
@@ -745,11 +758,11 @@ async function seedTransferPair(): Promise<{ a: string; b: string }> {
 	const b = `tb-${crypto.randomUUID()}`;
 	await seedBound(`u-${a}`, a);
 	await seedBound(`u-${b}`, b);
-	await call("/admin/issuances", {
+	await call("/api/v1/admin/issuances", {
 		token: ADMIN_TOKEN(),
 		body: { amount: 100 },
 	});
-	await call("/admin/distributions", {
+	await call("/api/v1/admin/distributions", {
 		token: ADMIN_TOKEN(),
 		body: { issuer: ISSUER, subject: a, amount: 100 },
 	});
@@ -839,16 +852,16 @@ describe("unexpected failure boundary", () => {
 
 		// 401: no bearer credential on a known route.
 		const unauthenticated = await handleRequest(
-			new Request(`${ORIGIN}/internal/balance`, { method: "POST" }),
+			new Request(`${ORIGIN}/api/v1/balance`, { method: "POST" }),
 			broken,
 		);
 		expect(unauthenticated.status).toBe(401);
 		expect(await errorCode(unauthenticated)).toBe("unauthorized");
 
 		// 403: an authenticated principal on the wrong route group — the
-		// admin credential on an internal route.
+		// admin credential on a non-admin application route.
 		const forbidden = await handleRequest(
-			new Request(`${ORIGIN}/internal/balance`, {
+			new Request(`${ORIGIN}/api/v1/balance`, {
 				method: "POST",
 				headers: {
 					Authorization: `Bearer ${ADMIN_TOKEN()}`,
@@ -863,7 +876,7 @@ describe("unexpected failure boundary", () => {
 
 		// 415: authenticated JSON route with a non-JSON media type.
 		const wrongMedia = await handleRequest(
-			postRequest("/internal/balance", {
+			postRequest("/api/v1/balance", {
 				headers: { "Content-Type": "text/plain" },
 				body: "{}",
 			}),
@@ -874,7 +887,7 @@ describe("unexpected failure boundary", () => {
 
 		// 400 invalid_request: malformed JSON on an authenticated JSON route.
 		const malformed = await handleRequest(
-			postRequest("/internal/balance", { headers: json, body: "{" }),
+			postRequest("/api/v1/balance", { headers: json, body: "{" }),
 			broken,
 		);
 		expect(malformed.status).toBe(400);
@@ -882,7 +895,7 @@ describe("unexpected failure boundary", () => {
 
 		// 400 idempotency_key_required: valid transfer body, missing key.
 		const noKey = await handleRequest(
-			postRequest("/internal/transfers", {
+			postRequest("/api/v1/transfers", {
 				headers: json,
 				body: validTransferBody,
 			}),
@@ -894,7 +907,7 @@ describe("unexpected failure boundary", () => {
 		// 400 invalid_request: canonicalization failure (lone surrogate in
 		// the parsed body) after a valid key is supplied.
 		const loneSurrogate = await handleRequest(
-			postRequest("/internal/transfers", {
+			postRequest("/api/v1/transfers", {
 				headers: {
 					...json,
 					"Idempotency-Key": `cf-${crypto.randomUUID()}`,
@@ -909,13 +922,13 @@ describe("unexpected failure boundary", () => {
 		// 400 invalid_limit / invalid_cursor: authenticated admin history
 		// with an invalid query — validation fails before the DO call.
 		const badLimit = await handleRequest(
-			adminRequest("/admin/treasury/history?limit=0"),
+			adminRequest("/api/v1/admin/treasury/history?limit=0"),
 			broken,
 		);
 		expect(badLimit.status).toBe(400);
 		expect(await errorCode(badLimit)).toBe("invalid_limit");
 		const badCursor = await handleRequest(
-			adminRequest("/admin/treasury/history?cursor=abc"),
+			adminRequest("/api/v1/admin/treasury/history?cursor=abc"),
 			broken,
 		);
 		expect(badCursor.status).toBe(400);
@@ -928,7 +941,7 @@ describe("unexpected failure boundary", () => {
 	it("500s only after all Worker-side validation succeeds and acquisition throws", async () => {
 		const { env: broken, calls } = countingBrokenEnv();
 		const response = await handleRequest(
-			postRequest("/internal/balance", {
+			postRequest("/api/v1/balance", {
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ issuer: ISSUER, subject: "s" }),
 			}),
@@ -946,7 +959,7 @@ describe("unexpected failure boundary", () => {
 
 	it("normalizes a COMMUNITY_STATE acquisition throw to 500 internal_error without detail", async () => {
 		const response = await handleRequest(
-			adminRequest("/admin/treasury/balance"),
+			adminRequest("/api/v1/admin/treasury/balance"),
 			brokenEnv(),
 		);
 		expect(response.status).toBe(500);
@@ -976,7 +989,7 @@ describe("unexpected failure boundary", () => {
 			},
 		} as unknown as Env;
 		const response = await handleRequest(
-			adminRequest("/admin/treasury/balance"),
+			adminRequest("/api/v1/admin/treasury/balance"),
 			envWithRejectingStub,
 		);
 		expect(response.status).toBe(500);

@@ -79,7 +79,8 @@ mutation it guards commit atomically.
 
 Record ids are allocated inside repository implementations — identifier
 allocation is a persistence-boundary concern (the persistence specification), so no
-`IdGenerator`/`RandomSource` port exists yet. For the same reason the only
+`IdGenerator`/`RandomSource` port exists. Registration proof secrets are generated at the
+Worker/OIDC boundary rather than by the runtime-independent application layer. For the same reason the only
 raw-string-to-brand coercion is the explicitly named `rehydrate` namespace:
 the visible unsafe boundary where persistence adapters and test support
 turn stored strings into opaque ids. Application API consumes
@@ -126,5 +127,5 @@ wallet's owning user id — the user's own id for a self-transfer (the actor/vis
 
 | Port/capability | Arriving PR |
 | --- | --- |
-| `User`/`RegistrationIntent` repositories, `RandomSource`, OIDC RP port | PR-4 |
+| `User`/`RegistrationIntent` repositories and registration use-case operations | PR-4 |
 | `DailyRewardClaim` repository + `DAILY_REWARD` kind | PR-5 |

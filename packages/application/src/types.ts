@@ -64,6 +64,14 @@ export function ledgerId(raw: string): LedgerId {
 	return raw as LedgerId;
 }
 
+/** Opaque identifier of a persisted RegistrationIntent. */
+export type RegistrationIntentId = Brand<string, "RegistrationIntentId">;
+
+/** Brands `raw` as a RegistrationIntentId. Persistence owns id allocation. */
+export function registrationIntentId(raw: string): RegistrationIntentId {
+	return raw as RegistrationIntentId;
+}
+
 /**
  * Rehydration of persisted identifiers: brands raw storage strings as
  * opaque ids. This is the visible unsafe boundary — only persistence
@@ -75,6 +83,7 @@ export const rehydrate = {
 	walletId,
 	operationId,
 	ledgerId,
+	registrationIntentId,
 } as const;
 
 /** The `actor_kind` values persisted on `economic_operations` (the actor/visibility specification). */
@@ -295,6 +304,42 @@ export type HistoryEntry = {
 export type Page<T> = {
 	readonly entries: readonly T[];
 	readonly nextCursor: string | null;
+};
+
+/**
+ * A persisted User (the identity specification): the stable internal
+ * identity an external `(issuer, subject)` pair binds to. Registration is
+ * the only creation path.
+ */
+export type UserRecord = {
+	readonly id: UserId;
+	readonly createdAt: number;
+};
+
+/** The `status` values persisted on `registration_intents` (the registration specification). */
+export type RegistrationIntentStatus = "active" | "consumed" | "superseded";
+
+/**
+ * A persisted RegistrationIntent (the registration specification): a
+ * one-shot registration transaction fixing one expected external identity,
+ * the correlation `state`, the authentication `nonce`, and the
+ * provider-independent proof-key secret (the production adapter stores it
+ * in the `pkce_verifier` column). `expiresAt` is epoch milliseconds exactly
+ * `createdAt + 600_000`; `consumedAt` is set iff `status` is `"consumed"`.
+ * Lifecycle and temporal validity are distinct: an intent may remain
+ * status-`active` past `expiresAt`, but is then unusable.
+ */
+export type RegistrationIntent = {
+	readonly id: RegistrationIntentId;
+	readonly expectedIssuer: string;
+	readonly expectedSubject: string;
+	readonly state: string;
+	readonly nonce: string;
+	readonly proofKeySecret: string;
+	readonly status: RegistrationIntentStatus;
+	readonly createdAt: number;
+	readonly expiresAt: number;
+	readonly consumedAt: number | null;
 };
 
 /**

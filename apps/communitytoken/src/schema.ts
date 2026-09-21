@@ -44,6 +44,24 @@
  * IdentityBinding has no unlink/disable/reassignment transition and an
  * IdempotencyRecord has no expiry or deletion path in Phase 2, so UPDATE
  * and DELETE are rejected outright on both tables.
+ *
+ * PR-4 adds `registration_intents` — the one-shot registration
+ * transaction state of the registration specification. The fixed
+ * `expires_at = created_at + 600000` CHECK pins the exact 600-second
+ * lifetime and `(status = 'consumed') = (consumed_at IS NOT NULL)` binds
+ * the lifecycle status to its terminal timestamp. The partial unique
+ * index `one_active_intent_per_identity` admits at most one status-active
+ * intent per external identity while consumed and superseded rows coexist
+ * freely. Triggers enforce the lifecycle at the storage floor: identity
+ * and proof columns (`id`, expected issuer/subject, `state`, `nonce`,
+ * `pkce_verifier`, creation time, expiry) are immutable, and the only
+ * legal transitions are `active -> consumed` with a non-null
+ * `consumed_at` and `active -> superseded` with a null `consumed_at` —
+ * every transition out of a terminal status, every no-op `active ->
+ * active` write, and every `consumed_at` rewrite after consumption is
+ * rejected. There is deliberately no DELETE trigger: the normative model
+ * permits future lazy deletion of expired intents even though PR-4
+ * exposes no delete path.
  */
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
@@ -174,5 +192,43 @@ CREATE TRIGGER IF NOT EXISTS idempotency_records_immutable_delete
 BEFORE DELETE ON idempotency_records
 BEGIN
   SELECT RAISE(ABORT, 'idempotency_records is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS registration_intents (
+  id TEXT PRIMARY KEY,
+  expected_issuer TEXT NOT NULL,
+  expected_subject TEXT NOT NULL,
+  state TEXT NOT NULL UNIQUE,
+  nonce TEXT NOT NULL,
+  pkce_verifier TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('active','consumed','superseded')),
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  consumed_at INTEGER,
+  CHECK (expires_at = created_at + 600000),
+  CHECK ((status = 'consumed') = (consumed_at IS NOT NULL))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_intent_per_identity
+  ON registration_intents(expected_issuer, expected_subject)
+  WHERE status = 'active';
+
+CREATE TRIGGER IF NOT EXISTS registration_intents_immutable_identity
+BEFORE UPDATE OF id, expected_issuer, expected_subject, state, nonce,
+  pkce_verifier, created_at, expires_at ON registration_intents
+BEGIN
+  SELECT RAISE(ABORT, 'registration intent identity is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS registration_intents_lifecycle
+BEFORE UPDATE OF status, consumed_at ON registration_intents
+BEGIN
+  SELECT RAISE(ABORT, 'illegal registration intent lifecycle transition')
+  WHERE NOT (
+    OLD.status = 'active' AND (
+      (NEW.status = 'consumed' AND NEW.consumed_at IS NOT NULL)
+      OR (NEW.status = 'superseded' AND NEW.consumed_at IS NULL)
+    )
+  );
 END;
 `;

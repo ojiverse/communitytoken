@@ -14,6 +14,12 @@ interface Env {
 	ADMIN_API_TOKEN?: string;
 	/** Bearer credential asserting the `discord-adapter` principal. */
 	DISCORD_ADAPTER_SERVICE_TOKEN?: string;
+	/** Trusted OIDC issuer URL (absolute HTTPS, no trailing slash). */
+	OIDC_ISSUER_URL?: string;
+	/** OIDC client identifier for the registration code flow. */
+	OIDC_CLIENT_ID?: string;
+	/** OIDC client secret; never leaves the Worker (never sent to the DO). */
+	OIDC_CLIENT_SECRET?: string;
 }
 
 declare namespace Cloudflare {
@@ -22,5 +28,11 @@ declare namespace Cloudflare {
 		ADMIN_API_TOKEN?: string;
 		/** Bearer credential asserting the `discord-adapter` principal. */
 		DISCORD_ADAPTER_SERVICE_TOKEN?: string;
+		/** Trusted OIDC issuer URL (absolute HTTPS, no trailing slash). */
+		OIDC_ISSUER_URL?: string;
+		/** OIDC client identifier for the registration code flow. */
+		OIDC_CLIENT_ID?: string;
+		/** OIDC client secret; never leaves the Worker (never sent to the DO). */
+		OIDC_CLIENT_SECRET?: string;
 	}
 }

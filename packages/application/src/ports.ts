@@ -21,7 +21,11 @@ import type {
 	OperationKind,
 	OperationRecord,
 	Page,
+	RegistrationIntent,
+	RegistrationIntentId,
 	UserId,
+	UserRecord,
+	UserWallet,
 	Wallet,
 	WalletId,
 } from "./types";
@@ -57,6 +61,8 @@ export type TransactionScope = {
 	readonly ledger: LedgerRepository;
 	readonly identityBindings: IdentityBindingRepository;
 	readonly idempotencyRecords: IdempotencyRepository;
+	readonly users: UserRepository;
+	readonly registrationIntents: RegistrationIntentRepository;
 };
 
 /**
@@ -135,6 +141,18 @@ export interface WalletRepository {
 	 */
 	setBalance(id: WalletId, balance: number, updatedAt: number): void;
 
+	/**
+	 * Inserts the single zero-balance `user`-kind wallet owned by
+	 * `record.ownerUserId` and returns the stored wallet, including the id
+	 * allocated at the persistence boundary. `updatedAt` equals
+	 * `createdAt`. Only registration creates user wallets, so no
+	 * general-purpose wallet insert exists — the kind/balance fields are
+	 * not caller-supplied.
+	 * @throws {Error} when `ownerUserId` already owns a wallet (the storage
+	 *   UNIQUE constraint on `owner_user_id` rejects the insert).
+	 */
+	insertUserWallet(record: NewUserWallet): UserWallet;
+
 	/** Returns the sum of all wallet balances — the economic-state specification `supply(S)` fact. */
 	totalSupply(): number;
 }
@@ -199,10 +217,52 @@ export interface LedgerRepository {
 }
 
 /**
- * IdentityBinding lookup (the identity specification): resolves an exact
+ * The fields of a user-owned Wallet the caller supplies; `id` is allocated
+ * by the repository and `kind`, `balance`, and `updatedAt` are fixed to
+ * `"user"`, `0`, and `createdAt` — a registration wallet cannot be a system
+ * wallet or carry a non-zero balance.
+ */
+export type NewUserWallet = {
+	readonly ownerUserId: UserId;
+	readonly createdAt: number;
+};
+
+/** The fields of a User the caller supplies; `id` is allocated by the repository. */
+export type NewUser = {
+	readonly createdAt: number;
+};
+
+/** The fields of an IdentityBinding the caller supplies (the identity specification). */
+export type NewIdentityBinding = {
+	readonly issuer: string;
+	readonly subject: string;
+	readonly userId: UserId;
+	readonly createdAt: number;
+};
+
+/**
+ * The fields of a RegistrationIntent the caller supplies; `id` is allocated
+ * by the repository, `status` starts `"active"`, and `consumedAt` starts
+ * `null`. `expiresAt` must equal `createdAt + 600_000` (the storage CHECK
+ * enforces it).
+ */
+export type NewRegistrationIntent = {
+	readonly expectedIssuer: string;
+	readonly expectedSubject: string;
+	readonly state: string;
+	readonly nonce: string;
+	readonly proofKeySecret: string;
+	readonly createdAt: number;
+	readonly expiresAt: number;
+};
+
+/**
+ * IdentityBinding storage (the identity specification): resolves an exact
  * `(issuer, subject)` external identity to the stable internal User it is
- * bound to. Read-only at this layer — production binding creation is owned
- * by registration and deliberately absent here.
+ * bound to. Creation is registration-owned — `insert` exists only so the
+ * registration completion section can commit the binding atomically with
+ * the User and wallet it points to. No unlink/disable/reassignment path
+ * exists in Phase 2.
  */
 export interface IdentityBindingRepository {
 	/**
@@ -212,6 +272,71 @@ export interface IdentityBindingRepository {
 	 * applied — the lookup is an exact match.
 	 */
 	findUserIdByExternal(issuer: string, subject: string): UserId | undefined;
+
+	/**
+	 * Appends the IdentityBinding for `binding`'s exact `(issuer, subject)`
+	 * pair. Called only inside the registration completion section.
+	 * @throws {Error} when the `(issuer, subject)` pair is already bound
+	 *   (the storage UNIQUE constraint rejects the insert).
+	 */
+	insert(binding: NewIdentityBinding): void;
+}
+
+/**
+ * User storage (the identity specification): registration allocates a
+ * stable internal User per proven external identity. Append-only — a User
+ * has no update or deletion path in Phase 2.
+ */
+export interface UserRepository {
+	/**
+	 * Inserts a User and returns the stored record, including the id
+	 * allocated at the persistence boundary (`crypto.randomUUID()`).
+	 */
+	insert(record: NewUser): UserRecord;
+}
+
+/**
+ * RegistrationIntent storage (the registration specification): the
+ * one-shot registration transaction state keyed by the unguessable
+ * `state` correlation value. Lifecycle is storage-enforced: only
+ * `active -> consumed` (non-null `consumed_at`) and
+ * `active -> superseded` (null `consumed_at`) transitions are legal, and
+ * identity/proof columns are immutable.
+ */
+export interface RegistrationIntentRepository {
+	/**
+	 * Returns the intent with the exact `state` correlation value, or
+	 * `undefined` when none exists. The status/lifecycle columns are
+	 * returned verbatim — expiry evaluation (`nowMs >= expiresAt`) is the
+	 * caller's job.
+	 */
+	findByState(state: string): RegistrationIntent | undefined;
+
+	/**
+	 * Marks every status-`active` intent of the exact
+	 * `(expectedIssuer, expectedSubject)` pair `superseded` — including
+	 * already-expired ones, which keeps the partial unique index from
+	 * blocking the replacement insert. Non-active rows are untouched.
+	 */
+	supersedeActive(expectedIssuer: string, expectedSubject: string): void;
+
+	/**
+	 * Inserts a new status-`active` intent and returns the stored record,
+	 * including the id allocated at the persistence boundary
+	 * (`crypto.randomUUID()`).
+	 * @throws {Error} when `record.expiresAt !== record.createdAt +
+	 *   600_000` or another active intent exists for the pair (storage
+	 *   CHECK / partial unique index reject the insert).
+	 */
+	insert(record: NewRegistrationIntent): RegistrationIntent;
+
+	/**
+	 * Marks the intent `id` `consumed` at `consumedAt` — the single-use
+	 * terminal transition. Only ever called on a status-`active` row.
+	 * @throws {Error} when `id` is not status-`active` (the lifecycle
+	 *   trigger rejects the transition).
+	 */
+	markConsumed(id: RegistrationIntentId, consumedAt: number): void;
 }
 
 /**

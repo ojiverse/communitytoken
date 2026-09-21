@@ -38,6 +38,8 @@ import {
 	createIdentityBindingRepository,
 	createLedgerRepository,
 	createOperationRepository,
+	createRegistrationIntentRepository,
+	createUserRepository,
 	createWalletRepository,
 } from "./repositories";
 
@@ -159,6 +161,10 @@ export function createStorageUnitOfWork(
 						ledger: createLedgerRepository(storage.sql),
 						identityBindings: createIdentityBindingRepository(storage.sql),
 						idempotencyRecords: createIdempotencyRepository(storage.sql),
+						users: createUserRepository(storage.sql),
+						registrationIntents: createRegistrationIntentRepository(
+							storage.sql,
+						),
 					};
 					// The section's single authoritative clock sample, taken after
 					// transaction entry and before any caller code runs.
@@ -175,6 +181,11 @@ export function createStorageUnitOfWork(
 							),
 							idempotencyRecords: guardRepository(
 								scope.idempotencyRecords,
+								assertOpen,
+							),
+							users: guardRepository(scope.users, assertOpen),
+							registrationIntents: guardRepository(
+								scope.registrationIntents,
 								assertOpen,
 							),
 						},

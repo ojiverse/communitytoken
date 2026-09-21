@@ -43,7 +43,7 @@ function userActor(rawUserId: string): UserActor {
 
 describe("worker fetch surface", () => {
 	it("404s unowned paths and 401s unauthenticated owned routes", async () => {
-		for (const path of ["/", "/health", "/api/v1/registration-intents"]) {
+		for (const path of ["/", "/health"]) {
 			const response = await SELF.fetch(`https://token.ojiver.se${path}`, {
 				method: "POST",
 			});

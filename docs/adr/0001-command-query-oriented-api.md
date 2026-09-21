@@ -80,9 +80,10 @@ authenticated principal
   -> application-defined projection
 ```
 
-The `/internal/*` and `/admin/*` namespaces are route groups for different calling authorities;
-they are not resource hierarchies and are not themselves security boundaries. Authentication and
-authorization of the asserted principal remain authoritative.
+The URL namespace does not define resource ownership or security authority. Authentication and
+authorization of the asserted principal remain authoritative. The concrete HTTP namespace is defined
+separately by ADR-0002 so this decision remains about the application API model rather than a
+particular path layout.
 
 ## Rationale
 

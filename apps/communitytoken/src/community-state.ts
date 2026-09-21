@@ -96,7 +96,7 @@ export type ExternalIdentity = {
 };
 
 /**
- * The caller-computed idempotency inputs for `POST /internal/transfers`:
+ * The caller-computed idempotency inputs for `POST /api/v1/transfers`:
  * the verbatim `Idempotency-Key` header value plus the fingerprint the
  * Worker computed (SHA-256 is async, so it cannot run inside the
  * synchronous section).
@@ -107,32 +107,32 @@ export type IdempotencyParams = {
 	readonly requestFingerprint: string;
 };
 
-/** Wire input of `POST /internal/history`, wire-validated by the Worker. */
+/** Wire input of `POST /api/v1/history`, wire-validated by the Worker. */
 export type InternalHistoryInput = ExternalIdentity & {
 	readonly cursor?: string;
 	readonly limit?: number;
 };
 
-/** Wire input of `POST /internal/transfers`, wire-validated by the Worker. */
+/** Wire input of `POST /api/v1/transfers`, wire-validated by the Worker. */
 export type InternalTransferInput = {
 	readonly from: ExternalIdentity;
 	readonly to: ExternalIdentity;
 	readonly amount: number;
 };
 
-/** Wire input of `POST /admin/issuances`, wire-validated by the Worker. */
+/** Wire input of `POST /api/v1/admin/issuances`, wire-validated by the Worker. */
 export type AdminIssueInput = {
 	readonly amount: number;
 	readonly metadata?: string;
 };
 
-/** Wire input of `POST /admin/distributions`, wire-validated by the Worker. */
+/** Wire input of `POST /api/v1/admin/distributions`, wire-validated by the Worker. */
 export type AdminDistributeInput = ExternalIdentity & {
 	readonly amount: number;
 	readonly metadata?: string;
 };
 
-/** Query input of `GET /admin/treasury/history`, validated by the Worker. */
+/** Query input of `GET /api/v1/admin/treasury/history`, validated by the Worker. */
 export type AdminTreasuryHistoryInput = {
 	readonly cursor?: string;
 	readonly limit?: number;
@@ -356,7 +356,7 @@ export class CommunityState extends DurableObject {
 	// unexpected failures throw and surface as `500 internal_error`.
 
 	/**
-	 * `POST /internal/balance`: the bound user's own balance under
+	 * `POST /api/v1/balance`: the bound user's own balance under
 	 * self-only visibility — the adapter supplies only the external
 	 * identity; the resolved internal User is the actor.
 	 */
@@ -395,7 +395,7 @@ export class CommunityState extends DurableObject {
 	}
 
 	/**
-	 * `POST /internal/history`: newest-first cursor-paginated history of
+	 * `POST /api/v1/history`: newest-first cursor-paginated history of
 	 * the bound user's own wallet — same visibility rule as the balance.
 	 */
 	internalHistory(
@@ -437,7 +437,7 @@ export class CommunityState extends DurableObject {
 	}
 
 	/**
-	 * `POST /internal/transfers`: the idempotency-protected P2P transfer.
+	 * `POST /api/v1/transfers`: the idempotency-protected P2P transfer.
 	 * The serialized section runs the fixed choreography — idempotency
 	 * lookup, sender resolution, recipient resolution, use case, record
 	 * insert — so a successful transfer and its replay record commit
@@ -535,7 +535,7 @@ export class CommunityState extends DurableObject {
 	}
 
 	/**
-	 * `POST /admin/issuances`: explicit `TOKEN_ISSUANCE` into the
+	 * `POST /api/v1/admin/issuances`: explicit `TOKEN_ISSUANCE` into the
 	 * treasury; the `admin-api` check at the route group is backstopped by
 	 * the use case's `requireAdmin` guard.
 	 */
@@ -563,7 +563,7 @@ export class CommunityState extends DurableObject {
 	}
 
 	/**
-	 * `POST /admin/distributions`: `DISTRIBUTION` of treasury reserve to
+	 * `POST /api/v1/admin/distributions`: `DISTRIBUTION` of treasury reserve to
 	 * the user bound to the given external identity — the internal User id
 	 * is never exposed to the operator.
 	 */
@@ -602,7 +602,7 @@ export class CommunityState extends DurableObject {
 		});
 	}
 
-	/** `GET /admin/treasury/balance`: administrative treasury balance. */
+	/** `GET /api/v1/admin/treasury/balance`: administrative treasury balance. */
 	adminTreasuryBalance(principal: ServicePrincipal): RouteResponse {
 		if (principal !== ADMIN_API_PRINCIPAL) {
 			return errorDescriptor(
@@ -621,7 +621,7 @@ export class CommunityState extends DurableObject {
 	}
 
 	/**
-	 * `GET /admin/treasury/history`: newest-first cursor-paginated
+	 * `GET /api/v1/admin/treasury/history`: newest-first cursor-paginated
 	 * treasury history, including issuances — administrative inspection.
 	 */
 	adminTreasuryHistory(

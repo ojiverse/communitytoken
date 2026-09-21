@@ -83,7 +83,7 @@ export type ActorKind = "user" | "service" | "system";
 /**
  * The administrative service principal of the actor/visibility specification: the only actor
  * permitted to run `TOKEN_ISSUANCE` and `DISTRIBUTION`. Bound at the
- * `/admin/*` boundary; other service principals (e.g. `discord-adapter`)
+ * `/api/v1/admin/*` boundary; other service principals (e.g. `discord-adapter`)
  * are not administrative.
  */
 export const ADMIN_API_PRINCIPAL = "admin-api";

@@ -50,7 +50,7 @@ export type ApplicationDeps = {
 
 /**
  * The runtime-independent application contract invoked by trusted surfaces
- * (the `/internal/*` and `/admin/*` boundaries of the authentication/delegation specification). Every
+ * (the `/api/v1/*` and `/api/v1/admin/*` boundaries of the authentication/delegation specification). Every
  * method runs its operation inside `deps.uow.transact`. Callers that must
  * extend the atomic unit — the idempotency record of the idempotency specification, the Daily Reward
  * claim row of the Daily Reward specification — instead open the section themselves and invoke the

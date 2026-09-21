@@ -119,10 +119,10 @@ describe("requestFingerprintV1", () => {
 		const body = { b: 1, a: { d: [2, { e: 3 }] } };
 		const fingerprint = await requestFingerprintV1(
 			"post",
-			"/internal/transfers",
+			"/api/v1/transfers",
 			body,
 		);
-		const preimage = `communitytoken-idempotency-v1\nPOST\n/internal/transfers\n${canonicalizeJson(body)}`;
+		const preimage = `communitytoken-idempotency-v1\nPOST\n/api/v1/transfers\n${canonicalizeJson(body)}`;
 		const expected = hex(
 			await crypto.subtle.digest("SHA-256", new TextEncoder().encode(preimage)),
 		);
@@ -131,12 +131,12 @@ describe("requestFingerprintV1", () => {
 	});
 
 	it("uppercases the method and uses the path verbatim", async () => {
-		const lower = await requestFingerprintV1("post", "/internal/transfers", {});
-		const upper = await requestFingerprintV1("POST", "/internal/transfers", {});
+		const lower = await requestFingerprintV1("post", "/api/v1/transfers", {});
+		const upper = await requestFingerprintV1("POST", "/api/v1/transfers", {});
 		expect(lower).toBe(upper);
 		const otherPath = await requestFingerprintV1(
 			"POST",
-			"/internal/transfers/",
+			"/api/v1/transfers/",
 			{},
 		);
 		expect(otherPath).not.toBe(upper);

@@ -43,7 +43,7 @@ function userActor(rawUserId: string): UserActor {
 
 describe("worker fetch surface", () => {
 	it("404s unowned paths and 401s unauthenticated owned routes", async () => {
-		for (const path of ["/", "/health", "/internal/registration-intents"]) {
+		for (const path of ["/", "/health", "/api/v1/registration-intents"]) {
 			const response = await SELF.fetch(`https://token.ojiver.se${path}`, {
 				method: "POST",
 			});
@@ -51,7 +51,7 @@ describe("worker fetch surface", () => {
 		}
 		// An owned route with no credential: route match succeeded and
 		// authentication rejects before the handler runs.
-		const owned = await SELF.fetch("https://token.ojiver.se/internal/balance", {
+		const owned = await SELF.fetch("https://token.ojiver.se/api/v1/balance", {
 			method: "POST",
 		});
 		expect(owned.status).toBe(401);

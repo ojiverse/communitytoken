@@ -52,7 +52,7 @@ import {
  */
 export interface CommunityStateApi {
 	/**
-	 * `POST /internal/balance` for the asserted principal.
+	 * `POST /api/v1/balance` for the asserted principal.
 	 * @returns the route outcome descriptor; never rejects for expected
 	 *   failures.
 	 * @throws {Error} on unexpected storage/contract/runtime failure.
@@ -63,7 +63,7 @@ export interface CommunityStateApi {
 	): Promise<RouteResponse>;
 
 	/**
-	 * `POST /internal/history` for the asserted principal.
+	 * `POST /api/v1/history` for the asserted principal.
 	 * @returns the route outcome descriptor; never rejects for expected
 	 *   failures.
 	 * @throws {Error} on unexpected storage/contract/runtime failure.
@@ -74,7 +74,7 @@ export interface CommunityStateApi {
 	): Promise<RouteResponse>;
 
 	/**
-	 * `POST /internal/transfers` for the asserted principal.
+	 * `POST /api/v1/transfers` for the asserted principal.
 	 * @returns the route outcome descriptor, replayed verbatim when the
 	 *   idempotency record matches; never rejects for expected failures.
 	 * @throws {Error} on unexpected storage/contract/runtime failure.
@@ -86,7 +86,7 @@ export interface CommunityStateApi {
 	): Promise<RouteResponse>;
 
 	/**
-	 * `POST /admin/issuances` for the asserted principal.
+	 * `POST /api/v1/admin/issuances` for the asserted principal.
 	 * @returns the route outcome descriptor; never rejects for expected
 	 *   failures.
 	 * @throws {Error} on unexpected storage/contract/runtime failure.
@@ -97,7 +97,7 @@ export interface CommunityStateApi {
 	): Promise<RouteResponse>;
 
 	/**
-	 * `POST /admin/distributions` for the asserted principal.
+	 * `POST /api/v1/admin/distributions` for the asserted principal.
 	 * @returns the route outcome descriptor; never rejects for expected
 	 *   failures.
 	 * @throws {Error} on unexpected storage/contract/runtime failure.
@@ -108,7 +108,7 @@ export interface CommunityStateApi {
 	): Promise<RouteResponse>;
 
 	/**
-	 * `GET /admin/treasury/balance` for the asserted principal.
+	 * `GET /api/v1/admin/treasury/balance` for the asserted principal.
 	 * @returns the route outcome descriptor; never rejects for expected
 	 *   failures.
 	 * @throws {Error} on unexpected storage/contract/runtime failure.
@@ -116,7 +116,7 @@ export interface CommunityStateApi {
 	adminTreasuryBalance(principal: ServicePrincipal): Promise<RouteResponse>;
 
 	/**
-	 * `GET /admin/treasury/history` for the asserted principal.
+	 * `GET /api/v1/admin/treasury/history` for the asserted principal.
 	 * @returns the route outcome descriptor; never rejects for expected
 	 *   failures.
 	 * @throws {Error} on unexpected storage/contract/runtime failure.
@@ -136,7 +136,7 @@ const DECIMAL_INTEGER = /^(0|[1-9][0-9]*)$/;
 
 /**
  * The `Idempotency-Key` constraint of the idempotency specification:
- * required on `POST /internal/transfers`, length `1..255`, the header
+ * required on `POST /api/v1/transfers`, length `1..255`, the header
  * value used verbatim — never trimmed or normalized.
  */
 const IDEMPOTENCY_KEY_MAX_LENGTH = 255;
@@ -429,7 +429,7 @@ function validateDistributeBody(
 
 /**
  * Validates the `cursor`/`limit` query parameters of
- * `GET /admin/treasury/history`: the same fixed grammar and range as the
+ * `GET /api/v1/admin/treasury/history`: the same fixed grammar and range as the
  * POST history body's fields, never clamped.
  */
 function validateHistoryQuery(url: URL): Validation<AdminTreasuryHistoryInput> {
@@ -601,18 +601,19 @@ const adminTreasuryHistoryRoute: Route = {
 
 /**
  * The complete route set: exact `"METHOD pathname"` pairs only. Routes
- * owned by later PRs — `POST /internal/registration-intents`,
- * `POST /internal/daily-reward`, `GET /auth/oidc/callback` — are absent
- * and therefore `404 not_found` until their owners land.
+ * owned by later PRs — `POST /api/v1/registration-intents`,
+ * `POST /api/v1/daily-reward`, `GET /auth/oidc/callback`,
+ * `POST /interactions` — are absent and therefore `404 not_found` until
+ * their owners land.
  */
 const ROUTES: Readonly<Record<string, Route>> = {
-	"POST /internal/balance": internalBalanceRoute,
-	"POST /internal/history": internalHistoryRoute,
-	"POST /internal/transfers": internalTransfersRoute,
-	"POST /admin/issuances": adminIssueRoute,
-	"POST /admin/distributions": adminDistributeRoute,
-	"GET /admin/treasury/balance": adminTreasuryBalanceRoute,
-	"GET /admin/treasury/history": adminTreasuryHistoryRoute,
+	"POST /api/v1/balance": internalBalanceRoute,
+	"POST /api/v1/history": internalHistoryRoute,
+	"POST /api/v1/transfers": internalTransfersRoute,
+	"POST /api/v1/admin/issuances": adminIssueRoute,
+	"POST /api/v1/admin/distributions": adminDistributeRoute,
+	"GET /api/v1/admin/treasury/balance": adminTreasuryBalanceRoute,
+	"GET /api/v1/admin/treasury/history": adminTreasuryHistoryRoute,
 };
 
 /** The principal each route group authorizes — least privilege. */

@@ -25,8 +25,8 @@ Adapter delegation and administrative authority are distinct service principals.
 
 Possession of adapter authority does not imply administrative authority.
 
-Administrative economic capabilities include explicit issuance, treasury distribution, and treasury
-inspection.
+Administrative capabilities include explicit issuance, treasury distribution, treasury inspection,
+and Daily Reward policy administration.
 
 A generic service principal cannot express those administrative operations.
 

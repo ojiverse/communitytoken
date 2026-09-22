@@ -14,6 +14,8 @@ import type {
 	IdentityBindingRepository,
 	LedgerRepository,
 	OperationRepository,
+	RegistrationIntentRepository,
+	UserRepository,
 	WalletRepository,
 } from "@communitytoken/application";
 import {
@@ -23,7 +25,10 @@ import {
 	type Page,
 	type PersistedActor,
 	persistedActor,
+	type RegistrationIntent,
+	type RegistrationIntentStatus,
 	rehydrate,
+	type UserWallet,
 	type Wallet,
 } from "@communitytoken/application";
 import type { OperationKind } from "@communitytoken/economic-kernel";
@@ -141,6 +146,25 @@ export function createWalletRepository(sql: SqlStorage): WalletRepository {
 				throw new Error(`setBalance on missing wallet: ${id}`);
 			}
 		},
+		insertUserWallet(record) {
+			const id = rehydrate.walletId(crypto.randomUUID());
+			sql.exec(
+				"INSERT INTO wallets (id, kind, owner_user_id, balance, created_at, updated_at) VALUES (?, 'user', ?, 0, ?, ?)",
+				id,
+				record.ownerUserId,
+				record.createdAt,
+				record.createdAt,
+			);
+			const stored: UserWallet = {
+				id,
+				kind: "user",
+				ownerUserId: record.ownerUserId,
+				balance: 0,
+				createdAt: record.createdAt,
+				updatedAt: record.createdAt,
+			};
+			return Object.freeze(stored);
+		},
 		totalSupply() {
 			return Number(
 				sql
@@ -250,9 +274,11 @@ type IdentityBindingRow = {
 };
 
 /**
- * SQLite-backed IdentityBinding lookup: exact `(issuer, subject)` match
- * against the append-only binding table. Creation is registration-owned
- * (PR-4); PR-3 has no insert port.
+ * SQLite-backed IdentityBinding storage: exact `(issuer, subject)` lookup
+ * plus the registration-owned `insert`. A duplicate pair is rejected by
+ * the UNIQUE constraint and propagates as a storage failure — callers
+ * resolve the binding before inserting, inside the same serialized
+ * section.
  */
 export function createIdentityBindingRepository(
 	sql: SqlStorage,
@@ -268,6 +294,15 @@ export function createIdentityBindingRepository(
 				.toArray() as unknown as IdentityBindingRow[];
 			const row = rows[0];
 			return row === undefined ? undefined : rehydrate.userId(row.user_id);
+		},
+		insert(binding) {
+			sql.exec(
+				"INSERT INTO identity_bindings (issuer, subject, user_id, created_at) VALUES (?, ?, ?, ?)",
+				binding.issuer,
+				binding.subject,
+				binding.userId,
+				binding.createdAt,
+			);
 		},
 	};
 }
@@ -321,6 +356,126 @@ export function createIdempotencyRepository(
 				record.storedResult,
 				record.createdAt,
 			);
+		},
+	};
+}
+
+/**
+ * SQLite-backed User storage (issue #4 PR-4): append-only; registration
+ * allocates each User id with `crypto.randomUUID()` at the persistence
+ * boundary.
+ */
+export function createUserRepository(sql: SqlStorage): UserRepository {
+	return {
+		insert(record) {
+			const id = rehydrate.userId(crypto.randomUUID());
+			sql.exec(
+				"INSERT INTO users (id, created_at) VALUES (?, ?)",
+				id,
+				record.createdAt,
+			);
+			return Object.freeze({ id, createdAt: record.createdAt });
+		},
+	};
+}
+
+type RegistrationIntentRow = {
+	readonly id: string;
+	readonly expected_issuer: string;
+	readonly expected_subject: string;
+	readonly state: string;
+	readonly nonce: string;
+	readonly pkce_verifier: string;
+	readonly status: RegistrationIntentStatus;
+	readonly created_at: number;
+	readonly expires_at: number;
+	readonly consumed_at: number | null;
+};
+
+const INTENT_COLUMNS =
+	"id, expected_issuer, expected_subject, state, nonce, pkce_verifier, status, created_at, expires_at, consumed_at";
+
+function toRegistrationIntent(row: RegistrationIntentRow): RegistrationIntent {
+	return Object.freeze({
+		id: rehydrate.registrationIntentId(row.id),
+		expectedIssuer: row.expected_issuer,
+		expectedSubject: row.expected_subject,
+		state: row.state,
+		nonce: row.nonce,
+		proofKeySecret: row.pkce_verifier,
+		status: row.status,
+		createdAt: row.created_at,
+		expiresAt: row.expires_at,
+		consumedAt: row.consumed_at,
+	});
+}
+
+/**
+ * SQLite-backed RegistrationIntent storage (issue #4 PR-4): the
+ * application boundary's `proofKeySecret` maps to the `pkce_verifier`
+ * column. The storage floor enforces the lifecycle: `supersedeActive`
+ * rewrites every status-active row of the pair (including already-expired
+ * ones, which is what keeps the partial unique index from blocking the
+ * replacement insert), `markConsumed` writes the single-use terminal
+ * transition, and any illegal transition or immutable-column write aborts
+ * in the storage triggers.
+ */
+export function createRegistrationIntentRepository(
+	sql: SqlStorage,
+): RegistrationIntentRepository {
+	return {
+		findByState(state) {
+			const rows = sql
+				.exec(
+					`SELECT ${INTENT_COLUMNS} FROM registration_intents WHERE state = ?`,
+					state,
+				)
+				.toArray() as unknown as RegistrationIntentRow[];
+			const row = rows[0];
+			return row === undefined ? undefined : toRegistrationIntent(row);
+		},
+		supersedeActive(expectedIssuer, expectedSubject) {
+			sql.exec(
+				"UPDATE registration_intents SET status = 'superseded' WHERE expected_issuer = ? AND expected_subject = ? AND status = 'active'",
+				expectedIssuer,
+				expectedSubject,
+			);
+		},
+		insert(record) {
+			const id = rehydrate.registrationIntentId(crypto.randomUUID());
+			sql.exec(
+				`INSERT INTO registration_intents (${INTENT_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL)`,
+				id,
+				record.expectedIssuer,
+				record.expectedSubject,
+				record.state,
+				record.nonce,
+				record.proofKeySecret,
+				record.createdAt,
+				record.expiresAt,
+			);
+			return toRegistrationIntent({
+				id,
+				expected_issuer: record.expectedIssuer,
+				expected_subject: record.expectedSubject,
+				state: record.state,
+				nonce: record.nonce,
+				pkce_verifier: record.proofKeySecret,
+				status: "active",
+				created_at: record.createdAt,
+				expires_at: record.expiresAt,
+				consumed_at: null,
+			});
+		},
+		markConsumed(id, consumedAt) {
+			const cursor = sql.exec(
+				"UPDATE registration_intents SET status = 'consumed', consumed_at = ? WHERE id = ?",
+				consumedAt,
+				id,
+			);
+			if (cursor.rowsWritten !== 1) {
+				throw new Error(`markConsumed on missing intent: ${id}`);
+			}
 		},
 	};
 }

@@ -10,7 +10,8 @@
 	},
 	"dependencies": {
 		"@communitytoken/application": "workspace:*",
-		"@communitytoken/economic-kernel": "workspace:*"
+		"@communitytoken/economic-kernel": "workspace:*",
+		"jose": "6.2.12"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "0.22.0",

@@ -8,13 +8,19 @@ export type {
 	IdempotencyRepository,
 	IdentityBindingRepository,
 	LedgerRepository,
+	NewIdentityBinding,
 	NewLedgerEntry,
 	NewOperation,
+	NewRegistrationIntent,
+	NewUser,
+	NewUserWallet,
 	OperationRepository,
+	RegistrationIntentRepository,
 	Synchronous,
 	TransactionContext,
 	TransactionScope,
 	UnitOfWork,
+	UserRepository,
 	WalletRepository,
 } from "./ports";
 export type {
@@ -35,6 +41,9 @@ export type {
 	OperationRecord,
 	Page,
 	PersistedActor,
+	RegistrationIntent,
+	RegistrationIntentId,
+	RegistrationIntentStatus,
 	RejectedError,
 	RejectionCode,
 	ServiceActor,
@@ -45,6 +54,7 @@ export type {
 	UseCaseResult,
 	UserActor,
 	UserId,
+	UserRecord,
 	UserWallet,
 	UserWalletSelector,
 	Wallet,
@@ -58,6 +68,7 @@ export {
 	ok,
 	persistedActor,
 	persistedActorOf,
+	registrationIntentId,
 	rehydrate,
 	TREASURY_SELECTOR,
 	userSelector,
@@ -66,6 +77,18 @@ export {
 	applyEconomicCommand,
 	type EconomicSelectorCommand,
 } from "./use-cases/apply-economic-command";
+export {
+	type CompleteRegistrationInput,
+	type CompleteRegistrationOutcome,
+	completeRegistration,
+	type RegistrationUnavailableReason,
+} from "./use-cases/complete-registration";
+export {
+	type CreateRegistrationIntentInput,
+	type CreateRegistrationIntentOutcome,
+	createRegistrationIntent,
+	REGISTRATION_INTENT_TTL_MS,
+} from "./use-cases/create-registration-intent";
 export {
 	type DistributeTokenInput,
 	distributeToken,

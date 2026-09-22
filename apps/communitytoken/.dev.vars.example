@@ -4,3 +4,11 @@
 # fails closed.
 ADMIN_API_TOKEN=replace-with-local-admin-token
 DISCORD_ADAPTER_SERVICE_TOKEN=replace-with-local-discord-adapter-token
+
+# OIDC relying-party configuration (PR-4). The issuer must be absolute
+# HTTPS with no query, fragment, or trailing slash; all three values are
+# required at runtime. Placeholders only — real values are provisioned
+# as Worker secrets/environment.
+OIDC_ISSUER_URL=https://discord.id.ojiver.se
+OIDC_CLIENT_ID=replace-with-local-oidc-client-id
+OIDC_CLIENT_SECRET=replace-with-local-oidc-client-secret

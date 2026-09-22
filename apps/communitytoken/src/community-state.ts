@@ -7,7 +7,10 @@ import {
 	type BalanceResult,
 	type Clock,
 	type CommunityTokenApplication,
+	type CompleteRegistrationOutcome,
+	completeRegistration as completeRegistrationOperation,
 	createCommunityTokenApplication,
+	createRegistrationIntent as createRegistrationIntentOperation,
 	type DistributeTokenInput,
 	distributeToken as distributeTokenOperation,
 	type EconomicSelectorCommand,
@@ -138,6 +141,49 @@ export type AdminTreasuryHistoryInput = {
 	readonly limit?: number;
 };
 
+/**
+ * The unguessable registration material the Worker generates before the
+ * serialized creation section (issue #4 PR-4): the correlation `state`,
+ * the authentication `nonce`, the provider-independent `proofKeySecret`
+ * (persisted in the `pkce_verifier` column — OIDC/PKCE naming does not
+ * cross into the application layer), and the authorization URL whose
+ * verbatim bytes the replay record stores. The OIDC client secret is
+ * deliberately absent: it never crosses a DO boundary.
+ */
+export type RegistrationProofMaterial = {
+	readonly state: string;
+	readonly nonce: string;
+	readonly proofKeySecret: string;
+	readonly authorizationUrl: string;
+};
+
+/**
+ * What the public callback's synchronous intent read returns (issue #4
+ * PR-4): the proof material needed to continue the OIDC exchange — the
+ * expected external identity, the authentication `nonce`, and the
+ * `proofKeySecret` presented as `code_verifier` — or `unavailable` for a
+ * missing, non-active, or expired intent (the callback maps that to the
+ * 410 expired-link page without further OIDC work).
+ */
+export type OidcRegistrationIntentRead =
+	| {
+			readonly type: "active";
+			readonly expectedIssuer: string;
+			readonly expectedSubject: string;
+			readonly nonce: string;
+			readonly proofKeySecret: string;
+	  }
+	| { readonly type: "unavailable" };
+
+/**
+ * The external identity the Worker proved via ID-token verification and
+ * presents to the completion section for the exact re-check.
+ */
+export type VerifiedIdentity = {
+	readonly issuer: string;
+	readonly subject: string;
+};
+
 /** Builds the fixed error body `{error, error_description}`. */
 function errorDescriptor(
 	status: number,
@@ -231,15 +277,21 @@ function parseStoredResult(storedResult: string): RouteResponse {
  *
  * The RPC surface has three tiers:
  *
- *   - the seven route-facing methods (`internalBalance`,
- *     `internalHistory`, `internalTransfer`, `adminIssue`,
- *     `adminDistribute`, `adminTreasuryBalance`, `adminTreasuryHistory`) —
- *     the PR-3 trusted core API. Each receives the Worker's asserted
- *     service principal (never bearer bytes), re-checks it against its
- *     route group as a misroute backstop, owns the complete
+ *   - the ten route-facing methods — the PR-3 trusted core API
+ *     (`internalBalance`, `internalHistory`, `internalTransfer`,
+ *     `adminIssue`, `adminDistribute`, `adminTreasuryBalance`,
+ *     `adminTreasuryHistory`), the PR-4 idempotent intent creation
+ *     (`apiCreateRegistrationIntent`), and the PR-4 public-callback
+ *     pair (`getOidcRegistrationIntent`, `completeOidcRegistration`).
+ *     Principal-bearing methods receive the Worker's asserted service
+ *     principal (never bearer bytes) and re-check it against their
+ *     route group as a misroute backstop; the callback pair carries no
+ *     principal — it is reached only by the unauthenticated OIDC
+ *     protocol endpoint. Each method owns the complete
  *     `uow.transact` section — identity resolution, the protected
- *     mutation, and its idempotency record commit together — and returns
- *     serializable `{status, body}` descriptors;
+ *     mutation, and its idempotency record commit together — and
+ *     returns serializable `{status, body}` descriptors or typed
+ *     outcome unions;
  *   - the six product use-case methods (`issueToken`, `distributeToken`,
  *     `transferToken`, `payTreasury`, `getBalance`,
  *     `getTransactionHistory`) — the facade entries kept for the contract
@@ -650,6 +702,134 @@ export class CommunityState extends DurableObject {
 				? historyDescriptor(result.value)
 				: useCaseErrorDescriptor(result.error);
 		});
+	}
+
+	/**
+	 * `POST /api/v1/registration-intents` (issue #4 PR-4): the
+	 * idempotency-protected intent creation. One serialized section runs
+	 * the fixed choreography — idempotency lookup, binding lookup,
+	 * supersede, intent insert, replay-record insert — so a created intent
+	 * and its stored authorization URL commit atomically. Only the `201`
+	 * outcome is recordable: `200 already_registered` mutates nothing and
+	 * leaves the key unconsumed. `proof` was generated entirely in the
+	 * Worker (state/nonce/proof-key secret randoms, S256 challenge, URL)
+	 * before this synchronous section ran.
+	 */
+	apiCreateRegistrationIntent(
+		principal: ServicePrincipal,
+		idempotency: IdempotencyParams,
+		input: ExternalIdentity,
+		proof: RegistrationProofMaterial,
+	): RouteResponse {
+		if (principal !== DISCORD_ADAPTER_PRINCIPAL) {
+			return errorDescriptor(
+				403,
+				"forbidden",
+				`route requires the ${DISCORD_ADAPTER_PRINCIPAL} principal`,
+			);
+		}
+		return this.uow.transact((ctx) => {
+			const outcome = executeIdempotent(
+				ctx,
+				{
+					servicePrincipal: principal,
+					idempotencyKey: idempotency.key,
+					fingerprintVersion: idempotency.fingerprintVersion,
+					requestFingerprint: idempotency.requestFingerprint,
+				},
+				(): IdempotentExecution<RouteResponse> => {
+					const result = createRegistrationIntentOperation(ctx, {
+						expectedIssuer: input.issuer,
+						expectedSubject: input.subject,
+						state: proof.state,
+						nonce: proof.nonce,
+						proofKeySecret: proof.proofKeySecret,
+					});
+					if (result.type === "alreadyRegistered") {
+						return {
+							record: false,
+							result: {
+								status: 200,
+								body: { status: "already_registered" },
+							},
+						};
+					}
+					const descriptor: RouteResponse = {
+						status: 201,
+						body: {
+							status: "created",
+							authorization_url: proof.authorizationUrl,
+							expires_at: result.expiresAt,
+						},
+					};
+					return {
+						record: true,
+						result: descriptor,
+						storedResult: JSON.stringify(descriptor),
+					};
+				},
+			);
+			switch (outcome.type) {
+				case "replayed":
+					return parseStoredResult(outcome.storedResult);
+				case "conflict":
+					return errorDescriptor(
+						409,
+						"idempotency_key_reuse",
+						"the idempotency key was already used with a different request",
+					);
+				case "executed":
+					return outcome.result;
+			}
+		});
+	}
+
+	/**
+	 * The public callback's synchronous intent read (issue #4 PR-4): the
+	 * proof material the Worker needs to continue the OIDC exchange, or
+	 * `unavailable` for a missing, non-active, or expired intent. Expiry
+	 * is evaluated against the section's frozen clock, exactly as the
+	 * completion use case evaluates it.
+	 */
+	getOidcRegistrationIntent(state: string): OidcRegistrationIntentRead {
+		return this.uow.transact((ctx) => {
+			const intent = ctx.registrationIntents.findByState(state);
+			if (
+				intent === undefined ||
+				intent.status !== "active" ||
+				ctx.nowMs >= intent.expiresAt
+			) {
+				return { type: "unavailable" };
+			}
+			return {
+				type: "active",
+				expectedIssuer: intent.expectedIssuer,
+				expectedSubject: intent.expectedSubject,
+				nonce: intent.nonce,
+				proofKeySecret: intent.proofKeySecret,
+			};
+		});
+	}
+
+	/**
+	 * The public callback's completion RPC (issue #4 PR-4): re-checks the
+	 * intent's validity and the exact verified identity inside one
+	 * serialized section, then resolves-or-creates User + wallet +
+	 * IdentityBinding and consumes the intent — the atomic result of the
+	 * registration specification. The outcome crosses the RPC boundary
+	 * verbatim; the callback maps `unavailable` reasons onto pages.
+	 */
+	completeOidcRegistration(
+		state: string,
+		verified: VerifiedIdentity,
+	): CompleteRegistrationOutcome {
+		return this.uow.transact((ctx) =>
+			completeRegistrationOperation(ctx, {
+				state,
+				verifiedIssuer: verified.issuer,
+				verifiedSubject: verified.subject,
+			}),
+		);
 	}
 
 	// ---- Test-support methods (unreachable from fetch) ----------------

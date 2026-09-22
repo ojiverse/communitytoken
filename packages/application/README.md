@@ -64,12 +64,18 @@ mutation it guards commit atomically.
     history join (newest-first, opaque cursor).
   - `LedgerRepository` — append-only `LedgerTransaction` writes.
   - `IdentityBindingRepository` — exact `(issuer, subject)` → `UserId`
-    lookup (PR-3). Binding creation is registration-owned (PR-4); the port
-    exposes no insert, unlink, or reassignment path.
+    lookup (PR-3) plus `insert` for the registration-owned binding row
+    (PR-4). The port exposes no unlink or reassignment path.
   - `IdempotencyRepository` — `find`/`insert` of `IdempotencyRecord`s keyed
     by `(servicePrincipal, idempotencyKey)` (PR-3). Records are append-only;
     a duplicate insert throws so a second commit can never overwrite the
     first replay record.
+  - `UserRepository` — `insert` of the stable internal `User` record
+    (PR-4). Registration allocates the user id inside the persistence
+    boundary; the port exposes no lookup or mutation path.
+  - `RegistrationIntentRepository` — the single-use registration proof
+    rows (PR-4): `findByState`, `supersedeActive` for latest-wins
+    replacement, `insert`, and `markConsumed`.
 - `TransactionContext` — a `TransactionScope` plus `nowMs`, the section's
   single frozen `now_ms` sampled once at entry before `work` runs (the temporal-authority specification). Context and repository handles are revoked permanently when their
   owning section closes: a captured handle cannot read or write after
@@ -127,5 +133,4 @@ wallet's owning user id — the user's own id for a self-transfer (the actor/vis
 
 | Port/capability | Arriving PR |
 | --- | --- |
-| `User`/`RegistrationIntent` repositories and registration use-case operations | PR-4 |
 | `DailyRewardClaim` repository + `DAILY_REWARD` kind | PR-5 |

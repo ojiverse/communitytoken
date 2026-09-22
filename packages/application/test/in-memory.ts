@@ -17,10 +17,12 @@ import type {
 	IdentityBindingRepository,
 	LedgerRepository,
 	OperationRepository,
+	RegistrationIntentRepository,
 	Synchronous,
 	TransactionContext,
 	TransactionScope,
 	UnitOfWork,
+	UserRepository,
 	WalletRepository,
 } from "../src/ports";
 import {
@@ -33,7 +35,11 @@ import {
 	type Page,
 	persistedActor,
 	persistedActorOf,
+	type RegistrationIntent,
+	type RegistrationIntentId,
+	registrationIntentId,
 	type UserId,
+	type UserRecord,
 	userId,
 	type Wallet,
 	type WalletId,
@@ -59,6 +65,8 @@ export type InMemoryState = {
 	ledgerRows: StoredLedger[];
 	identityBindings: Map<string, UserId>;
 	idempotencyRecords: Map<string, IdempotencyRecord>;
+	users: Map<UserId, UserRecord>;
+	registrationIntents: Map<RegistrationIntentId, RegistrationIntent>;
 	nextId: number;
 	nextRowid: number;
 };
@@ -71,6 +79,8 @@ export function createInMemoryState(): InMemoryState {
 		ledgerRows: [],
 		identityBindings: new Map(),
 		idempotencyRecords: new Map(),
+		users: new Map(),
+		registrationIntents: new Map(),
 		nextId: 0,
 		nextRowid: 0,
 	};
@@ -108,6 +118,21 @@ function walletRepository(state: InMemoryState): WalletRepository {
 				throw new Error(`setBalance on missing wallet: ${id}`);
 			}
 			state.wallets.set(id, Object.freeze({ ...wallet, balance, updatedAt }));
+		},
+		insertUserWallet(record) {
+			const wallet: Wallet = {
+				id: walletId(`wallet-${++state.nextId}`),
+				kind: "user",
+				ownerUserId: record.ownerUserId,
+				balance: 0,
+				createdAt: record.createdAt,
+				updatedAt: record.createdAt,
+			};
+			if (this.findByOwnerUserId(record.ownerUserId) !== undefined) {
+				throw new Error(`user already owns a wallet: ${record.ownerUserId}`);
+			}
+			state.wallets.set(wallet.id, Object.freeze(wallet));
+			return wallet;
 		},
 		totalSupply() {
 			let total = 0;
@@ -202,6 +227,103 @@ function identityBindingRepository(
 		findUserIdByExternal(issuer, subject) {
 			return state.identityBindings.get(JSON.stringify([issuer, subject]));
 		},
+		insert(binding) {
+			const key = JSON.stringify([binding.issuer, binding.subject]);
+			if (state.identityBindings.has(key)) {
+				throw new Error(
+					`identity already bound: ${binding.issuer}:${binding.subject}`,
+				);
+			}
+			state.identityBindings.set(key, binding.userId);
+		},
+	};
+}
+
+function userRepository(state: InMemoryState): UserRepository {
+	return {
+		insert(record) {
+			const user: UserRecord = Object.freeze({
+				id: userId(`user-${++state.nextId}`),
+				createdAt: record.createdAt,
+			});
+			state.users.set(user.id, user);
+			return user;
+		},
+	};
+}
+
+/**
+ * In-memory RegistrationIntent storage with the same lifecycle floor the
+ * production triggers enforce: only `active -> consumed` /
+ * `active -> superseded` transitions exist, and `supersedeActive` covers
+ * every status-active row of the pair, expired or not.
+ */
+function registrationIntentRepository(
+	state: InMemoryState,
+): RegistrationIntentRepository {
+	return {
+		findByState(state_) {
+			for (const intent of state.registrationIntents.values()) {
+				if (intent.state === state_) return intent;
+			}
+			return undefined;
+		},
+		supersedeActive(expectedIssuer, expectedSubject) {
+			for (const intent of state.registrationIntents.values()) {
+				if (
+					intent.expectedIssuer === expectedIssuer &&
+					intent.expectedSubject === expectedSubject &&
+					intent.status === "active"
+				) {
+					state.registrationIntents.set(
+						intent.id,
+						Object.freeze({ ...intent, status: "superseded" }),
+					);
+				}
+			}
+		},
+		insert(record) {
+			if (record.expiresAt !== record.createdAt + 600_000) {
+				throw new Error("expiresAt must equal createdAt + 600000");
+			}
+			for (const intent of state.registrationIntents.values()) {
+				if (
+					intent.status === "active" &&
+					intent.expectedIssuer === record.expectedIssuer &&
+					intent.expectedSubject === record.expectedSubject
+				) {
+					throw new Error(
+						`active intent already exists for ${record.expectedIssuer}:${record.expectedSubject}`,
+					);
+				}
+				if (intent.state === record.state) {
+					throw new Error(`duplicate intent state: ${record.state}`);
+				}
+			}
+			const intent: RegistrationIntent = Object.freeze({
+				id: registrationIntentId(`intent-${++state.nextId}`),
+				...record,
+				status: "active",
+				consumedAt: null,
+			});
+			state.registrationIntents.set(intent.id, intent);
+			return intent;
+		},
+		markConsumed(id, consumedAt) {
+			const intent = state.registrationIntents.get(id);
+			if (intent === undefined) {
+				throw new Error(`markConsumed on missing intent: ${id}`);
+			}
+			if (intent.status !== "active") {
+				throw new Error(
+					`illegal intent transition: ${intent.status} -> consumed`,
+				);
+			}
+			state.registrationIntents.set(
+				id,
+				Object.freeze({ ...intent, status: "consumed", consumedAt }),
+			);
+		},
 	};
 }
 
@@ -255,6 +377,8 @@ function cloneState(state: InMemoryState): InMemoryState {
 		ledgerRows: [...state.ledgerRows],
 		identityBindings: new Map(state.identityBindings),
 		idempotencyRecords: new Map(state.idempotencyRecords),
+		users: new Map(state.users),
+		registrationIntents: new Map(state.registrationIntents),
 		nextId: state.nextId,
 		nextRowid: state.nextRowid,
 	};
@@ -266,6 +390,8 @@ function commitState(target: InMemoryState, staging: InMemoryState): void {
 	target.ledgerRows = staging.ledgerRows;
 	target.identityBindings = staging.identityBindings;
 	target.idempotencyRecords = staging.idempotencyRecords;
+	target.users = staging.users;
+	target.registrationIntents = staging.registrationIntents;
 	target.nextId = staging.nextId;
 	target.nextRowid = staging.nextRowid;
 }
@@ -393,6 +519,8 @@ export function createInMemoryUnitOfWork(
 					ledger: ledgerRepository(staging),
 					identityBindings: identityBindingRepository(staging),
 					idempotencyRecords: idempotencyRepository(staging),
+					users: userRepository(staging),
+					registrationIntents: registrationIntentRepository(staging),
 				};
 				const wrapped = options?.wrapScope?.(scope) ?? scope;
 				// Per the temporal-authority specification: exactly one clock sample per section, taken before any
@@ -410,6 +538,11 @@ export function createInMemoryUnitOfWork(
 						),
 						idempotencyRecords: guardRepository(
 							wrapped.idempotencyRecords,
+							assertOpen,
+						),
+						users: guardRepository(wrapped.users, assertOpen),
+						registrationIntents: guardRepository(
+							wrapped.registrationIntents,
 							assertOpen,
 						),
 					},
@@ -489,6 +622,7 @@ export function createInMemoryFixture(options?: {
 				throw new Error(`user already seeded: ${rawUserId}`);
 			}
 		}
+		state.users.set(owner, Object.freeze({ id: owner, createdAt: 0 }));
 		const wallet: Wallet = {
 			id: walletId(`wallet-${++state.nextId}`),
 			kind: "user",

@@ -102,17 +102,9 @@ describe("routing", () => {
 	});
 
 	it("returns 404 for routes owned by later PRs, even authenticated", async () => {
-		for (const path of [
-			"/api/v1/registration-intents",
-			"/api/v1/daily-reward",
-			"/interactions",
-		]) {
+		for (const path of ["/api/v1/daily-reward", "/interactions"]) {
 			expect((await call(path, { token: DISCORD_TOKEN() })).status).toBe(404);
 		}
-		const callback = await SELF.fetch(`${ORIGIN}/auth/oidc/callback?code=x`, {
-			headers: { Authorization: `Bearer ${DISCORD_TOKEN()}` },
-		});
-		expect(callback.status).toBe(404);
 	});
 
 	it("returns 404 for every former /internal/* and /admin/* route — no aliases", async () => {

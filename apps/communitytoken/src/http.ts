@@ -1,17 +1,20 @@
 /**
- * The Worker-side HTTP pipeline of the PR-3 trusted core API (issue #4):
- * exact method+pathname routing, Bearer authentication, route-group
- * authorization, media-type and exact wire-shape validation,
- * Idempotency-Key validation, fingerprint v1 computation, then the
- * route-facing `CommunityState` call.
+ * The Worker-side HTTP pipeline of the trusted core API plus the public
+ * OIDC callback (issue #4 PR-3/PR-4): exact method+pathname routing, then
+ * per-route access — `ServiceRoute` runs Bearer authentication and
+ * principal authorization before the handler, `PublicRoute` runs the
+ * handler with no principal at all.
  *
- * Request-level ordering is fixed: route match (404) → authenticate (401)
- * → authorize the route group (403) → media type (415) → JSON object and
- * exact wire shape (400) → Idempotency-Key where required (400) →
- * fingerprint (400 on canonicalization failure) → DO call. Route-facing
- * DO methods return `{status, body}` descriptors forwarded verbatim;
- * any unexpected exception after route match — Worker-side or RPC —
- * normalizes to `500 internal_error` with no detail leak.
+ * Request-level ordering on service routes is fixed: route match (404) →
+ * authenticate (401) → authorize the route's required principal (403) →
+ * media type (415) → JSON object and exact wire shape (400) →
+ * Idempotency-Key where required (400) → fingerprint (400 on
+ * canonicalization failure) → DO call. Route-facing DO methods return
+ * `{status, body}` descriptors forwarded verbatim. Each route owns its
+ * unexpected-failure renderer: JSON application routes normalize any
+ * unexpected exception to `500 internal_error`, while the public OIDC
+ * callback renders its generic HTML 500 page — the callback never
+ * produces JSON.
  *
  * Routing is exact: no trailing-slash normalization, no case
  * normalization, and a wrong method on a known path is `404 not_found`
@@ -20,7 +23,10 @@
  * headers are emitted.
  */
 
-import { ADMIN_API_PRINCIPAL } from "@communitytoken/application";
+import {
+	ADMIN_API_PRINCIPAL,
+	type CompleteRegistrationOutcome,
+} from "@communitytoken/application";
 import {
 	authenticate,
 	DISCORD_ADAPTER_PRINCIPAL,
@@ -34,13 +40,24 @@ import type {
 	IdempotencyParams,
 	InternalHistoryInput,
 	InternalTransferInput,
+	OidcRegistrationIntentRead,
+	RegistrationProofMaterial,
 	RouteResponse,
+	VerifiedIdentity,
 } from "./community-state";
 import {
 	CanonicalizationError,
 	FINGERPRINT_VERSION,
 	requestFingerprintV1,
 } from "./fingerprint";
+import {
+	buildAuthorizationUrl,
+	computeProofKeyChallenge,
+	failurePage,
+	generateRegistrationSecrets,
+	handleOidcCallback,
+	readOidcConfig,
+} from "./registration";
 
 /**
  * The route-facing RPC surface the Worker invokes (issue #4 PR-3). The
@@ -125,6 +142,43 @@ export interface CommunityStateApi {
 		principal: ServicePrincipal,
 		input: AdminTreasuryHistoryInput,
 	): Promise<RouteResponse>;
+
+	/**
+	 * `POST /api/v1/registration-intents` for the asserted principal
+	 * (issue #4 PR-4). `proof` carries the Worker-generated
+	 * state/nonce/proof-key secret and the authorization URL the `201`
+	 * replay record stores verbatim; the OIDC client secret never crosses
+	 * this boundary.
+	 * @returns the route outcome descriptor, replayed verbatim when the
+	 *   idempotency record matches; never rejects for expected failures.
+	 * @throws {Error} on unexpected storage/contract/runtime failure.
+	 */
+	apiCreateRegistrationIntent(
+		principal: ServicePrincipal,
+		idempotency: IdempotencyParams,
+		input: ExternalIdentity,
+		proof: RegistrationProofMaterial,
+	): Promise<RouteResponse>;
+
+	/**
+	 * The public callback's synchronous intent read (issue #4 PR-4).
+	 * @returns the active intent's proof material, or `unavailable` for a
+	 *   missing, non-active, or expired intent; never rejects for expected
+	 *   states.
+	 * @throws {Error} on unexpected storage/contract/runtime failure.
+	 */
+	getOidcRegistrationIntent(state: string): Promise<OidcRegistrationIntentRead>;
+
+	/**
+	 * The public callback's completion RPC (issue #4 PR-4).
+	 * @returns the `completeRegistration` outcome verbatim; never rejects
+	 *   for expected failures.
+	 * @throws {Error} on unexpected storage/contract/runtime failure.
+	 */
+	completeOidcRegistration(
+		state: string,
+		verified: VerifiedIdentity,
+	): Promise<CompleteRegistrationOutcome>;
 }
 
 /**
@@ -141,8 +195,6 @@ const DECIMAL_INTEGER = /^(0|[1-9][0-9]*)$/;
  */
 const IDEMPOTENCY_KEY_MAX_LENGTH = 255;
 
-type RouteGroup = "internal" | "admin";
-
 /** The single community instance stub (issue #4 fixed topology). */
 function communityStub(env: Env): CommunityStateApi {
 	return env.COMMUNITY_STATE.get(
@@ -150,11 +202,11 @@ function communityStub(env: Env): CommunityStateApi {
 	) as unknown as CommunityStateApi;
 }
 
-/** A per-route handler after routing and authentication have succeeded. */
-type RouteContext = {
+/** The handler context shared by every route access kind. */
+type BaseRouteContext = {
 	readonly request: Request;
 	readonly url: URL;
-	readonly principal: ServicePrincipal;
+	readonly env: Env;
 	/**
 	 * Acquires the `CommunityState` stub. Lazily evaluated: a handler calls
 	 * it only after every Worker-side validation step (media type, JSON
@@ -166,10 +218,46 @@ type RouteContext = {
 	readonly getStub: () => CommunityStateApi;
 };
 
-type Route = {
-	readonly group: RouteGroup;
-	readonly handle: (context: RouteContext) => Promise<Response>;
+/** The context of a public protocol route: deliberately no principal. */
+type PublicRouteContext = BaseRouteContext;
+
+/**
+ * The context of a service route after Bearer authentication and
+ * principal authorization have succeeded: `principal` is the asserted
+ * service principal the handler forwards to the DO.
+ */
+type ServiceRouteContext = BaseRouteContext & {
+	readonly principal: ServicePrincipal;
 };
+
+/**
+ * A public protocol route (issue #4 PR-4): no authentication runs and the
+ * handler receives no principal. Its `unexpectedError` renderer produces
+ * the route's fixed failure surface — the OIDC callback's generic HTML
+ * page — so an unexpected exception can never leak JSON internals onto a
+ * protocol endpoint.
+ */
+type PublicRoute = {
+	readonly access: "public";
+	readonly unexpectedError: () => Response;
+	readonly handle: (context: PublicRouteContext) => Promise<Response>;
+};
+
+/**
+ * An authenticated service route: the dispatcher asserts a Bearer
+ * credential and checks it equals `requiredPrincipal` (least privilege —
+ * the admin namespace is lexically nested below `/api/v1` but is a
+ * distinct authorization group). `unexpectedError` renders the JSON
+ * `500 internal_error` contract.
+ */
+type ServiceRoute = {
+	readonly access: "service";
+	readonly requiredPrincipal: ServicePrincipal;
+	readonly unexpectedError: () => Response;
+	readonly handle: (context: ServiceRouteContext) => Promise<Response>;
+};
+
+type Route = PublicRoute | ServiceRoute;
 
 /**
  * The result of a validation step: the typed value, or the exact error
@@ -488,8 +576,15 @@ async function invoke(call: () => Promise<RouteResponse>): Promise<Response> {
 	}
 }
 
-const internalBalanceRoute: Route = {
-	group: "internal",
+/** The JSON `500 internal_error` renderer every service route shares. */
+function jsonInternalError(): Response {
+	return errorResponse(500, "internal_error", "unexpected internal error");
+}
+
+const internalBalanceRoute: ServiceRoute = {
+	access: "service",
+	requiredPrincipal: DISCORD_ADAPTER_PRINCIPAL,
+	unexpectedError: jsonInternalError,
 	async handle({ request, principal, getStub }) {
 		const body = await readJsonObject(request);
 		if (!body.ok) return body.response;
@@ -500,8 +595,10 @@ const internalBalanceRoute: Route = {
 	},
 };
 
-const internalHistoryRoute: Route = {
-	group: "internal",
+const internalHistoryRoute: ServiceRoute = {
+	access: "service",
+	requiredPrincipal: DISCORD_ADAPTER_PRINCIPAL,
+	unexpectedError: jsonInternalError,
 	async handle({ request, principal, getStub }) {
 		const body = await readJsonObject(request);
 		if (!body.ok) return body.response;
@@ -512,8 +609,10 @@ const internalHistoryRoute: Route = {
 	},
 };
 
-const internalTransfersRoute: Route = {
-	group: "internal",
+const internalTransfersRoute: ServiceRoute = {
+	access: "service",
+	requiredPrincipal: DISCORD_ADAPTER_PRINCIPAL,
+	unexpectedError: jsonInternalError,
 	async handle({ request, url, principal, getStub }) {
 		const body = await readJsonObject(request);
 		if (!body.ok) return body.response;
@@ -559,8 +658,10 @@ const internalTransfersRoute: Route = {
 	},
 };
 
-const adminIssueRoute: Route = {
-	group: "admin",
+const adminIssueRoute: ServiceRoute = {
+	access: "service",
+	requiredPrincipal: ADMIN_API_PRINCIPAL,
+	unexpectedError: jsonInternalError,
 	async handle({ request, principal, getStub }) {
 		const body = await readJsonObject(request);
 		if (!body.ok) return body.response;
@@ -571,8 +672,10 @@ const adminIssueRoute: Route = {
 	},
 };
 
-const adminDistributeRoute: Route = {
-	group: "admin",
+const adminDistributeRoute: ServiceRoute = {
+	access: "service",
+	requiredPrincipal: ADMIN_API_PRINCIPAL,
+	unexpectedError: jsonInternalError,
 	async handle({ request, principal, getStub }) {
 		const body = await readJsonObject(request);
 		if (!body.ok) return body.response;
@@ -583,15 +686,19 @@ const adminDistributeRoute: Route = {
 	},
 };
 
-const adminTreasuryBalanceRoute: Route = {
-	group: "admin",
+const adminTreasuryBalanceRoute: ServiceRoute = {
+	access: "service",
+	requiredPrincipal: ADMIN_API_PRINCIPAL,
+	unexpectedError: jsonInternalError,
 	handle({ principal, getStub }) {
 		return invoke(() => getStub().adminTreasuryBalance(principal));
 	},
 };
 
-const adminTreasuryHistoryRoute: Route = {
-	group: "admin",
+const adminTreasuryHistoryRoute: ServiceRoute = {
+	access: "service",
+	requiredPrincipal: ADMIN_API_PRINCIPAL,
+	unexpectedError: jsonInternalError,
 	handle({ url, principal, getStub }) {
 		const query = validateHistoryQuery(url);
 		if (!query.ok) return Promise.resolve(query.response);
@@ -600,13 +707,106 @@ const adminTreasuryHistoryRoute: Route = {
 };
 
 /**
+ * `POST /api/v1/registration-intents` (issue #4 PR-4): the trusted
+ * creation route the discord adapter calls for `/register`. The fixed
+ * order is wire shape → OIDC config → issuer equality → Idempotency-Key
+ * → fingerprint → secret generation → S256 challenge → authorization URL
+ * → the single DO RPC, so every async primitive (WebCrypto digests,
+ * random generation) completes before the synchronous section begins and
+ * the OIDC client secret never leaves the Worker.
+ */
+const registrationIntentsRoute: ServiceRoute = {
+	access: "service",
+	requiredPrincipal: DISCORD_ADAPTER_PRINCIPAL,
+	unexpectedError: jsonInternalError,
+	async handle({ request, url, env, principal, getStub }) {
+		const body = await readJsonObject(request);
+		if (!body.ok) return body.response;
+		const input = validateIdentity(body.value, "body");
+		if (!input.ok) return input.response;
+		const config = readOidcConfig(env);
+		if (config === null) return jsonInternalError();
+		if (input.value.issuer !== config.issuerUrl) {
+			return errorResponse(
+				400,
+				"invalid_request",
+				"issuer is not the configured trusted issuer",
+			);
+		}
+		const key = request.headers.get("Idempotency-Key");
+		if (
+			key === null ||
+			key.length === 0 ||
+			key.length > IDEMPOTENCY_KEY_MAX_LENGTH
+		) {
+			return errorResponse(
+				400,
+				"idempotency_key_required",
+				"Idempotency-Key header must be present and 1..255 characters",
+			);
+		}
+		let requestFingerprint: string;
+		try {
+			requestFingerprint = await requestFingerprintV1(
+				request.method,
+				url.pathname,
+				body.value,
+			);
+		} catch (error) {
+			if (error instanceof CanonicalizationError) {
+				return errorResponse(
+					400,
+					"invalid_request",
+					"request body cannot be canonically serialized",
+				);
+			}
+			throw error;
+		}
+		const secrets = generateRegistrationSecrets();
+		const challenge = await computeProofKeyChallenge(secrets.proofKeySecret);
+		const authorizationUrl = buildAuthorizationUrl(
+			config.issuerUrl,
+			config.clientId,
+			secrets,
+			challenge,
+		);
+		return invoke(() =>
+			getStub().apiCreateRegistrationIntent(
+				principal,
+				{
+					key,
+					fingerprintVersion: FINGERPRINT_VERSION,
+					requestFingerprint,
+				},
+				input.value,
+				{ ...secrets, authorizationUrl },
+			),
+		);
+	},
+};
+
+/**
+ * `GET /auth/oidc/callback` (issue #4 PR-4): the public OIDC protocol
+ * endpoint. No Bearer authentication runs; every outcome — expected or
+ * unexpected — is one of the fixed static HTML pages with the fixed
+ * security headers, never JSON, never a redirect.
+ */
+const oidcCallbackRoute: PublicRoute = {
+	access: "public",
+	unexpectedError: () => failurePage(500),
+	handle({ url, env, getStub }) {
+		return handleOidcCallback({ url, env, getStub });
+	},
+};
+
+/**
  * The complete route set: exact `"METHOD pathname"` pairs only. Routes
- * owned by later PRs — `POST /api/v1/registration-intents`,
- * `POST /api/v1/daily-reward`, `GET /auth/oidc/callback`,
- * `POST /interactions` — are absent and therefore `404 not_found` until
- * their owners land.
+ * owned by later PRs — `POST /api/v1/daily-reward`, `POST /interactions` —
+ * are absent and therefore `404 not_found` until their owners land.
  */
 const ROUTES: Readonly<Record<string, Route>> = {
+	"POST /api/v1/registration-intents": registrationIntentsRoute,
+	"GET /auth/oidc/callback": oidcCallbackRoute,
 	"POST /api/v1/balance": internalBalanceRoute,
 	"POST /api/v1/history": internalHistoryRoute,
 	"POST /api/v1/transfers": internalTransfersRoute,
@@ -616,23 +816,17 @@ const ROUTES: Readonly<Record<string, Route>> = {
 	"GET /api/v1/admin/treasury/history": adminTreasuryHistoryRoute,
 };
 
-/** The principal each route group authorizes — least privilege. */
-const REQUIRED_PRINCIPAL: Record<RouteGroup, ServicePrincipal> = {
-	internal: DISCORD_ADAPTER_PRINCIPAL,
-	admin: ADMIN_API_PRINCIPAL,
-};
-
 /**
- * The Worker `fetch` entry of the trusted core API: route match, Bearer
- * authentication, route-group authorization, then the route handler.
- *
- * Route matching runs before the unexpected-error boundary: an unknown
+ * The Worker `fetch` entry: exact route match first — an unknown
  * method/path is `404 not_found` without touching authentication or the
  * `COMMUNITY_STATE` binding, so it answers identically even when `env`
- * is broken. Everything after the match is wrapped — any unexpected
- * Worker-side exception (WebCrypto failure, binding acquisition, a
- * non-`CanonicalizationError` fingerprint throw, a route-handler throw)
- * normalizes to `500 internal_error` with no internal detail leak.
+ * is broken. After the match, access dispatch splits by route kind:
+ * public routes run their handler directly; service routes authenticate
+ * the Bearer credential (401), check it against the route's required
+ * principal (403), then run the handler with the asserted principal.
+ * Any unexpected exception after the match — Worker-side or RPC —
+ * resolves through the route's own renderer: JSON `500 internal_error`
+ * on service routes, the generic HTML 500 page on the public callback.
  */
 export async function handleRequest(
 	request: Request,
@@ -643,6 +837,19 @@ export async function handleRequest(
 	if (route === undefined) {
 		return errorResponse(404, "not_found", "no such route");
 	}
+	const context: BaseRouteContext = {
+		request,
+		url,
+		env,
+		getStub: () => communityStub(env),
+	};
+	if (route.access === "public") {
+		try {
+			return await route.handle(context);
+		} catch {
+			return route.unexpectedError();
+		}
+	}
 	try {
 		const principal = await authenticate(request, {
 			adminApiToken: env.ADMIN_API_TOKEN,
@@ -651,20 +858,15 @@ export async function handleRequest(
 		if (principal === null) {
 			return errorResponse(401, "unauthorized", "authentication failed");
 		}
-		if (principal !== REQUIRED_PRINCIPAL[route.group]) {
+		if (principal !== route.requiredPrincipal) {
 			return errorResponse(
 				403,
 				"forbidden",
-				"the principal is not authorized for this route group",
+				"the principal is not authorized for this route",
 			);
 		}
-		return await route.handle({
-			request,
-			url,
-			principal,
-			getStub: () => communityStub(env),
-		});
+		return await route.handle({ ...context, principal });
 	} catch {
-		return errorResponse(500, "internal_error", "unexpected internal error");
+		return route.unexpectedError();
 	}
 }

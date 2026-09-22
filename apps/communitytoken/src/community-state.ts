@@ -277,15 +277,21 @@ function parseStoredResult(storedResult: string): RouteResponse {
  *
  * The RPC surface has three tiers:
  *
- *   - the seven route-facing methods (`internalBalance`,
- *     `internalHistory`, `internalTransfer`, `adminIssue`,
- *     `adminDistribute`, `adminTreasuryBalance`, `adminTreasuryHistory`) —
- *     the PR-3 trusted core API. Each receives the Worker's asserted
- *     service principal (never bearer bytes), re-checks it against its
- *     route group as a misroute backstop, owns the complete
+ *   - the ten route-facing methods — the PR-3 trusted core API
+ *     (`internalBalance`, `internalHistory`, `internalTransfer`,
+ *     `adminIssue`, `adminDistribute`, `adminTreasuryBalance`,
+ *     `adminTreasuryHistory`), the PR-4 idempotent intent creation
+ *     (`apiCreateRegistrationIntent`), and the PR-4 public-callback
+ *     pair (`getOidcRegistrationIntent`, `completeOidcRegistration`).
+ *     Principal-bearing methods receive the Worker's asserted service
+ *     principal (never bearer bytes) and re-check it against their
+ *     route group as a misroute backstop; the callback pair carries no
+ *     principal — it is reached only by the unauthenticated OIDC
+ *     protocol endpoint. Each method owns the complete
  *     `uow.transact` section — identity resolution, the protected
- *     mutation, and its idempotency record commit together — and returns
- *     serializable `{status, body}` descriptors;
+ *     mutation, and its idempotency record commit together — and
+ *     returns serializable `{status, body}` descriptors or typed
+ *     outcome unions;
  *   - the six product use-case methods (`issueToken`, `distributeToken`,
  *     `transferToken`, `payTreasury`, `getBalance`,
  *     `getTransactionHistory`) — the facade entries kept for the contract

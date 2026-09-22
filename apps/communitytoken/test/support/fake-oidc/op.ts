@@ -34,9 +34,14 @@ export const FAKE_OIDC_CLIENT_SECRET = "test-oidc-client-secret";
 /** The fixed production callback URI the token exchange must present. */
 export const OIDC_REDIRECT_URI = "https://token.ojiver.se/auth/oidc/callback";
 
-/** A JWKS response queued for the next `{issuer}/jwks.json` GET. */
+/**
+ * A JWKS response queued for the next `{issuer}/jwks.json` GET. `keys`
+ * entries are either OP key names (`"a"`, `"b"`, `"z"` — resolved to the
+ * generated public JWK) or verbatim JSON objects, which lets tests emit
+ * malformed or duplicate-kid entries the fixture could never mint itself.
+ */
 export type JwksDirective =
-	| { readonly keys: readonly string[] }
+	| { readonly keys: readonly (string | Record<string, unknown>)[] }
 	| { readonly raw: string; readonly status?: number };
 
 /**
@@ -308,9 +313,11 @@ async function handleJwks(op: FakeOpState, prefix: string): Promise<Response> {
 	if (directive !== undefined && "raw" in directive) {
 		return new Response(directive.raw, { status: directive.status ?? 200 });
 	}
-	const kids = directive !== undefined ? directive.keys : ["a", "b"];
-	const keys = kids
-		.map((kid) => op.keys[kid]?.publicJwk)
+	const entries = directive !== undefined ? directive.keys : ["a", "b"];
+	const keys = entries
+		.map((entry) =>
+			typeof entry === "string" ? op.keys[entry]?.publicJwk : entry,
+		)
 		.filter((jwk): jwk is JWK => jwk !== undefined);
 	return json({ keys });
 }

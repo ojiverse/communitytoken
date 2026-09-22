@@ -12,16 +12,18 @@
  *   -> require alg === "RS256"
  *   -> require non-empty kid
  *   -> if cache absent: fetch /jwks.json and replace cache
- *   -> lookup kid
- *   -> if absent: refetch exactly once and replace cache
- *   -> lookup again
- *   -> if still absent: reject
- *   -> if duplicate matching kid exists: reject malformed JWKS
+ *   -> sameKid = keys where key.kid === kid
+ *   -> if none: refetch exactly once, replace cache, recompute sameKid
+ *   -> if still none (unknown kid): reject
+ *   -> if more than one (duplicate kid): reject malformed JWKS
+ *   -> validate the single selected key as an RSA/RS256 signing JWK —
+ *      a known kid on an unusable key is a malformed entry, not an
+ *      unknown kid, and never triggers a refetch
  *   -> import selected RSA key
  *   -> verify the JWT exactly once
  *   -> on signature failure: reject, do not refetch
  *
- * A usable JWK requires: matching `kid`, `kty === "RSA"`, string `n`/`e`,
+ * A usable JWK requires: `kty === "RSA"`, string `n`/`e`,
  * `use === "sig"` when present, `alg === "RS256"` when present.
  *
  * After the signature verifies, claims are checked against one wall-clock
@@ -111,20 +113,19 @@ async function fetchJwks(issuerUrl: string): Promise<readonly JWK[] | null> {
 	return body["keys"] as readonly JWK[];
 }
 
-/** The usable-JWK criteria of the JWKS selection contract. */
-function usableJwk(key: JWK, kid: string): boolean {
+/**
+ * The usable-JWK criteria of the JWKS selection contract, checked only
+ * after the `kid` filter has selected exactly one entry — a present-but-
+ * unusable key is a malformed entry, never an unknown kid.
+ */
+function usableJwk(key: JWK): boolean {
 	return (
-		key.kid === kid &&
 		key.kty === "RSA" &&
 		typeof key.n === "string" &&
 		typeof key.e === "string" &&
 		(key.use === undefined || key.use === "sig") &&
 		(key.alg === undefined || key.alg === "RS256")
 	);
-}
-
-function matchingKeys(keys: readonly JWK[], kid: string): readonly JWK[] {
-	return keys.filter((key) => usableJwk(key, kid));
 }
 
 /**
@@ -156,19 +157,20 @@ export async function verifyIdToken(
 		keys = fetched;
 		jwksCache.set(config.issuerUrl, keys);
 	}
-	let matching = matchingKeys(keys, kid);
-	if (matching.length === 0) {
+	let sameKid = keys.filter((key) => key.kid === kid);
+	if (sameKid.length === 0) {
 		const refetched = await fetchJwks(config.issuerUrl);
 		if (refetched === null) return FAIL;
 		jwksCache.set(config.issuerUrl, refetched);
-		matching = matchingKeys(refetched, kid);
-		if (matching.length === 0) return FAIL;
+		sameKid = refetched.filter((key) => key.kid === kid);
 	}
-	if (matching.length !== 1) return FAIL;
+	if (sameKid.length !== 1) return FAIL;
+	const selected = sameKid[0] as JWK;
+	if (!usableJwk(selected)) return FAIL;
 
 	let payload: Uint8Array;
 	try {
-		const key = await importJWK(matching[0] as JWK, "RS256");
+		const key = await importJWK(selected, "RS256");
 		const verified = await compactVerify(idToken, key);
 		payload = verified.payload;
 	} catch {

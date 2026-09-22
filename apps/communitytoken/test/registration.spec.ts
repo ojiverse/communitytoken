@@ -662,6 +662,41 @@ describe("JWKS cache and ID-token validation", () => {
 		await expectPage(second, 400, FAILURE_COPY);
 	});
 
+	it("rejects a duplicate kid whose twin entry is malformed", async () => {
+		const intent = await createIntent();
+		const response = await callback(
+			await successCallbackUrl(intent.state, {
+				challenge: intent.challenge,
+				claims: { sub: intent.subject, nonce: intent.nonce },
+				jwks: [{ keys: ["a", { kid: "key-a", kty: "EC" }] }],
+			}),
+		);
+		await expectPage(response, 400, FAILURE_COPY);
+		expect(await fakeOpStats(ISSUER)).toMatchObject({ jwksGets: 1 });
+	});
+
+	it("rejects a known kid on an unusable JWK without refetching", async () => {
+		const unusableJwks: readonly Record<string, unknown>[] = [
+			{ kid: "key-a", kty: "EC" }, // non-RSA key type
+			{ kid: "key-a", kty: "RSA", n: "AA", e: "AQAB", use: "enc" }, // non-signing use
+			{ kid: "key-a", kty: "RSA", n: "AA", e: "AQAB", alg: "ES256" }, // non-RS256 alg
+		];
+		for (const [index, unusable] of unusableJwks.entries()) {
+			ISSUER = `https://oidc.test/t/unusable-${index}`;
+			env.OIDC_ISSUER_URL = ISSUER;
+			const intent = await createIntent();
+			const response = await callback(
+				await successCallbackUrl(intent.state, {
+					challenge: intent.challenge,
+					claims: { sub: intent.subject, nonce: intent.nonce },
+					jwks: [{ keys: [unusable] }],
+				}),
+			);
+			await expectPage(response, 400, FAILURE_COPY);
+			expect(await fakeOpStats(ISSUER)).toMatchObject({ jwksGets: 1 });
+		}
+	});
+
 	it("rejects expired, not-yet-valid, and wrong-audience tokens", async () => {
 		const nowSeconds = Math.floor(Date.now() / 1000);
 		for (const claims of [

@@ -33,20 +33,29 @@ tracked with the interface implementation.
 
 For a previously completed key:
 
-- matching version and fingerprint returns the stored result without re-executing the mutation;
+- matching version and fingerprint returns the stored result without re-executing the request;
 - a mismatching fingerprint is rejected as key reuse.
 
-The stored result is the authority for successful replay.
+The stored result is the authority for replay.
+
+A completed result may be either a successful mutation or a terminal non-mutating outcome when
+re-evaluating the same logical request later could give it a different meaning.
+
+A failure explicitly defined as retryable is not a completed result merely because an idempotency key
+was presented.
 
 ## Atomicity
 
-The protected mutation and the replay record describing its committed result are one transaction.
+A protected mutation and the replay record describing its completed result are one transaction.
 
 There must be no committed state in which the protected mutation succeeded but its replay result was
 not recorded.
 
+Recording a terminal non-mutating result may consume the idempotency key but must not consume an
+independent feature eligibility that the domain says remains available.
+
 A failed domain operation that is defined as retryable must not consume independent feature
-eligibility merely because an idempotency key was presented.
+eligibility or be frozen as a completed replay result.
 
 ## Retention
 

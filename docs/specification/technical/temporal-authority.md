@@ -38,7 +38,19 @@ the product interface.
 
 ## Daily Reward
 
-Daily Reward derives reward_window_id only from the transaction's authoritative now_ms and the
-domain formula in the Daily Reward specification.
+Daily Reward window membership is determined only from the transaction's authoritative now_ms and
+the community-global window sequence defined by the Daily Reward specification.
 
-All eligibility checks and the corresponding successful claim observe that same value.
+Before a claim or policy change observes the current Daily Reward window, stale materialized window
+state is advanced until it contains that same now_ms.
+
+A policy change is applied only after any window transition already implied by now_ms has been
+resolved. A change committed after a boundary therefore targets a future window rather than changing
+the window that has already begun.
+
+Request arrival time, client time, and transaction completion time do not determine Daily Reward
+window membership.
+
+Two Users whose serialized transactions fall on opposite sides of a window boundary may correctly
+belong to different windows. Two transactions whose authoritative times belong to the same window
+must observe the same community-global window identity and policy snapshot.

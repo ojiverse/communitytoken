@@ -2,8 +2,8 @@
 
 Idempotency protects mutation requests from duplicate delivery.
 
-It is a transport/application consistency guarantee, not a replacement for domain uniqueness such as
-Daily Reward eligibility.
+It is a transport/application consistency guarantee. It does not decide whether two independently
+identified commands are equivalent under an external feature's business rules.
 
 ## Scope
 
@@ -33,29 +33,23 @@ tracked with the interface implementation.
 
 For a previously completed key:
 
-- matching version and fingerprint returns the stored result without re-executing the request;
+- matching version and fingerprint returns the stored result without re-executing the mutation;
 - a mismatching fingerprint is rejected as key reuse.
 
-The stored result is the authority for replay.
+The stored result is the authority for successful replay.
 
-A completed result may be either a successful mutation or a terminal non-mutating outcome when
-re-evaluating the same logical request later could give it a different meaning.
-
-A failure explicitly defined as retryable is not a completed result merely because an idempotency key
-was presented.
+An expected non-mutating failure is not made into a successful replay record merely because an
+idempotency key was presented.
 
 ## Atomicity
 
-A protected mutation and the replay record describing its completed result are one transaction.
+The protected mutation and the replay record describing its committed result are one transaction.
 
 There must be no committed state in which the protected mutation succeeded but its replay result was
 not recorded.
 
-Recording a terminal non-mutating result may consume the idempotency key but must not consume an
-independent feature eligibility that the domain says remains available.
-
-A failed domain operation that is defined as retryable must not consume independent feature
-eligibility or be frozen as a completed replay result.
+A failed domain operation must not consume independent business eligibility or become a successful
+mutation record merely because an idempotency key was presented.
 
 ## Retention
 

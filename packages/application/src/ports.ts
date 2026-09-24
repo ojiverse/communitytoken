@@ -69,8 +69,8 @@ export type TransactionScope = {
  * One open atomic section: the repositories plus the section's frozen clock.
  * Use-case operations take this context so that outer orchestration can own
  * the transaction and extend the atomic unit — an idempotency check and its
- * recorded result, or a Daily Reward claim row, commit in the same section
- * as the economic mutation (the transaction, idempotency, and Daily Reward specifications).
+ * recorded result commit in the same section as the economic mutation (the
+ * transaction and idempotency specifications).
  *
  * The context is valid only while its owning section is open: every
  * repository method it exposes throws once the owning `transact` call

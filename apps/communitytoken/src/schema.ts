@@ -3,10 +3,10 @@
  * `wallets`, `economic_operations`, `ledger_transactions`, plus the
  * append-only enforcement triggers.
  *
- * `economic_operations.kind` is created with all five Phase 2 literals —
- * including `DAILY_REWARD` — because SQLite cannot widen a CHECK without a
- * table rebuild. This is a storage floor only; it does not enable Daily
- * Reward semantics before their feature lands.
+ * `economic_operations.kind` admits exactly the four core operation
+ * kinds — `TOKEN_ISSUANCE`, `DISTRIBUTION`, `P2P_TRANSFER`,
+ * `TREASURY_PAYMENT` — the same set the economic-kernel `OperationKind`
+ * union declares.
  *
  * `wallets` carries the kind/owner correlation CHECK: a `system` wallet has
  * no owner, a `user` wallet always has exactly one — the structural
@@ -101,8 +101,7 @@ END;
 CREATE TABLE IF NOT EXISTS economic_operations (
   id TEXT PRIMARY KEY,
   kind TEXT NOT NULL CHECK (kind IN (
-    'TOKEN_ISSUANCE', 'DISTRIBUTION', 'P2P_TRANSFER', 'TREASURY_PAYMENT',
-    'DAILY_REWARD'
+    'TOKEN_ISSUANCE', 'DISTRIBUTION', 'P2P_TRANSFER', 'TREASURY_PAYMENT'
   )),
   metadata TEXT,
   actor_kind TEXT NOT NULL CHECK (actor_kind IN ('user', 'service', 'system')),

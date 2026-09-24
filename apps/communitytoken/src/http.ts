@@ -800,9 +800,8 @@ const oidcCallbackRoute: PublicRoute = {
 };
 
 /**
- * The complete route set: exact `"METHOD pathname"` pairs only. Routes
- * owned by later PRs — `POST /api/v1/daily-reward`, `POST /interactions` —
- * are absent and therefore `404 not_found` until their owners land.
+ * The complete route set: exact `"METHOD pathname"` pairs only. Every
+ * other method/path is `404 not_found`.
  */
 const ROUTES: Readonly<Record<string, Route>> = {
 	"POST /api/v1/registration-intents": registrationIntentsRoute,

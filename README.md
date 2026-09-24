@@ -1,18 +1,35 @@
-# Community Token Platform for ojiverse
+# Community Token Platform for OJIverse
 
-A transfer-centric community token system for ojiverse, rebuilt on Cloudflare Workers and
-Durable Objects.
+A feature-agnostic, transfer-centric community economic substrate for OJIverse, implemented on
+Cloudflare Workers and Durable Objects.
 
 ## Status
 
-The legacy Supabase/Deno implementation has been removed from the tree
-([issue #4](https://github.com/ojiverse/communitytoken/issues/4)); git history preserves it.
+The legacy Supabase/Deno implementation has been removed from the tree; Git history preserves it.
 
-The repository contains the runtime-independent economic core, executable contract suite,
-application boundary, and persistence proof used by the current rebuild.
+The current architecture deliberately keeps feature policy outside CommunityToken core:
 
-Phase 2 is tracked by
-[issue #4](https://github.com/ojiverse/communitytoken/issues/4).
+- [Architecture #17](https://github.com/ojiverse/communitytoken/issues/17) — feature-agnostic core boundary
+- [Roadmap #18](https://github.com/ojiverse/communitytoken/issues/18) — current sequencing and gates
+- [Phase 2 #19](https://github.com/ojiverse/communitytoken/issues/19) — minimal core + supported Discord surface
+- [Phase 3 #5](https://github.com/ojiverse/communitytoken/issues/5) — monorepo, CI/CD, and operational stabilization
+
+The core economic operation set is intentionally small:
+
+```text
+TOKEN_ISSUANCE
+DISTRIBUTION
+P2P_TRANSFER
+TREASURY_PAYMENT
+```
+
+Feature-specific eligibility, cadence, scheduling, campaign state, and business uniqueness are not
+core economic concepts merely because they may cause one of those movements.
+
+The repository currently contains the runtime-independent economic core, executable contract suite,
+application boundary, Cloudflare persistence implementation, trusted API boundary, and OIDC
+registration flow. Phase 2 cleanup #20 reconciles remaining source/schema comments and code with the
+feature-agnostic specification.
 
 ## Development
 
@@ -29,15 +46,16 @@ Formatting and linting use Biome; secrets scanning uses secretlint.
 ## Documentation
 
 - [Specifications](./docs/specification/README.md) — normative domain and technical invariants
-- [Economic Model](./docs/economic-model.md) — compatibility entry point into the economic specifications
+- [Economic Model](./docs/economic-model.md) — compatibility entry point into economic specifications
 - [Engineering Principles](./docs/engineering-principles/README.md)
 - [Design Policies](./docs/design-policy/README.md)
-- [Architecture Decision Records](./docs/adr/README.md) — durable rationale for architectural choices
+- [Architecture Decision Records](./docs/adr/README.md)
 
 Normative semantics and invariants live in the specifications. ADRs preserve architectural rationale
-that should remain discoverable beyond a design thread. Implementation sequencing, concrete runtime
-choices, deployment facts, and feature delivery details remain in the relevant GitHub issues.
+that should remain discoverable beyond a design thread. The current high-level responsibility
+boundary is #17. Implementation sequencing, concrete runtime choices, deployment facts, and feature
+delivery details live in the relevant GitHub issues.
 
-## LICENSE
+## License
 
-MIT License, see [./LICENSE](./LICENSE)
+MIT License, see [./LICENSE](./LICENSE).

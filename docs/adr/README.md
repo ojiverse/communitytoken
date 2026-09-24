@@ -11,3 +11,4 @@ invariants, while ADRs preserve architectural choices and their consequences.
 
 - [ADR-0001: Prefer command/query-oriented application APIs over resource-oriented CRUD APIs](./0001-command-query-oriented-api.md)
 - [ADR-0002: Namespace the application API under /api/v1](./0002-api-namespace.md)
+- [ADR-0003: Isolate Cloudflare resources by service while sharing one account](./0003-cloudflare-ingress-topology.md)

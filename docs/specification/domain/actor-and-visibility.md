@@ -23,11 +23,14 @@ derived from the source wallet.
 Examples of the distinction:
 
 - a User-to-User transfer has the sending User as actor;
-- a User claiming a treasury-funded reward has the claiming User as actor while the treasury is the source;
 - an administrative distribution has an administrative service as actor while the treasury is the source.
 
 For a user-initiated action received through an adapter, the adapter itself is not the actor. The
 resolved User is.
+
+This rule does not grant a User authority over the treasury. When an authorized service requests a
+treasury distribution, that service is the actor even if a feature outside the core initiated the
+request in response to a User action.
 
 ## Visibility
 

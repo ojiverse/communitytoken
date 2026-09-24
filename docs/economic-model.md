@@ -12,7 +12,6 @@ Start with:
 Related domain specifications:
 
 - [Actor and Visibility](./specification/domain/actor-and-visibility.md)
-- [Daily Reward](./specification/domain/daily-reward.md)
 - [Identity](./specification/domain/identity.md)
 
 System-boundary guarantees are under

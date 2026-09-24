@@ -26,6 +26,11 @@ TREASURY_PAYMENT
 Feature-specific eligibility, cadence, scheduling, campaign state, and business uniqueness are not
 core economic concepts merely because they may cause one of those movements.
 
+Production services may share one OJIverse Cloudflare account, but mutable resources and bindings are
+owned per service/plugin. Only CommunityToken core receives direct access to CommunityToken economic
+persistence; cross-service integration uses explicit application/protocol boundaries. See
+[ADR-0003](./docs/adr/0003-cloudflare-ingress-topology.md).
+
 The repository currently contains the runtime-independent economic core, executable contract suite,
 application boundary, Cloudflare persistence implementation, trusted API boundary, and OIDC
 registration flow. Phase 2 cleanup #20 reconciles remaining source/schema comments and code with the

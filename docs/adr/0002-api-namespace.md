@@ -18,7 +18,8 @@ The namespace should communicate what kind of HTTP surface a caller is using wit
 current adapter implementation or pretending that URL hierarchy is the authority model.
 
 CommunityToken also has protocol-specific public ingress that is not part of the application API:
-the OIDC callback and the Discord interactions endpoint.
+the OIDC callback. Discord interactions are a separate external-protocol surface owned by the Discord
+adapter rather than by the core application API.
 
 ## Decision
 
@@ -35,14 +36,13 @@ The CommunityToken HTTP surface is partitioned as follows:
     authentication-protocol endpoints
 
 /interactions
-    Discord interactions protocol ingress
+    Discord interactions protocol ingress when the Discord adapter is deployed
 ```
 
-The Phase 2 application routes are:
+The current core application routes are:
 
 ```text
 POST /api/v1/registration-intents
-POST /api/v1/daily-reward
 POST /api/v1/balance
 POST /api/v1/history
 POST /api/v1/transfers
@@ -53,7 +53,6 @@ GET  /api/v1/admin/treasury/balance
 GET  /api/v1/admin/treasury/history
 
 GET  /auth/oidc/callback
-POST /interactions
 ```
 
 The non-admin `/api/v1/*` operations are currently authorized for the `discord-adapter` service
@@ -102,8 +101,9 @@ The namespace is descriptive, not authoritative. Application-level authorization
 
 `/auth/oidc/callback` participates in the OIDC protocol rather than the command/query API.
 
-`/interactions` is the Discord interactions ingress. It verifies and translates an external
-protocol request before delegated application operations are invoked.
+`/interactions` participates in the Discord interactions protocol. The Discord adapter verifies and
+translates that external protocol before invoking CommunityToken application operations over their
+supported boundary.
 
 These endpoints therefore remain outside `/api/v1`.
 
@@ -138,11 +138,11 @@ query and command exposed by the application API.
 
 PR-3 shipped the first trusted API implementation using `/internal/*` and `/admin/*`.
 
-Before PR-4 adds new routes, the existing implementation must be renamed to the accepted namespace.
-The service has not reached the Phase 2 production rollout, so no compatibility aliases or redirect
-routes are introduced.
+Before PR-4 added new routes, the existing implementation was renamed to the accepted namespace. The
+service had not reached production rollout, so no compatibility aliases or redirect routes were
+introduced.
 
-The mapping is:
+The mapping was:
 
 ```text
 /internal/balance                -> /api/v1/balance
@@ -155,11 +155,11 @@ The mapping is:
 /admin/treasury/history          -> /api/v1/admin/treasury/history
 ```
 
-The old paths become `404 not_found`.
+The old paths became `404 not_found`.
 
-Because the idempotency fingerprint includes the request path, the rename changes transfer
-fingerprints. No compatibility or record migration is required before production rollout; tests and
-fixtures must use the new path consistently.
+Because the idempotency fingerprint includes the request path, the rename changed transfer
+fingerprints. No compatibility or record migration was required before production rollout; tests and
+fixtures use the new path consistently.
 
 ## Consequences
 

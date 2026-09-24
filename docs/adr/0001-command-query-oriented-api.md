@@ -7,17 +7,16 @@
 ## Context
 
 CommunityToken persists resources and entities such as Users, Wallets, IdentityBindings,
-EconomicOperations, LedgerTransactions, idempotency records, and feature state.
+EconomicOperations, LedgerTransactions, idempotency records, and registration state.
 
 Those resources are not, however, the primary abstraction that callers are allowed to mutate.
 CommunityToken's primary responsibility is to validate and execute a small set of domain-defined
 state transitions while preserving economic, identity, authorization, idempotency, and transactional
 invariants.
 
-Examples include token issuance, treasury distribution, user transfer, treasury payment,
-registration, and Daily Reward claim. A wallet balance, ledger row, or identity binding changes only
-as a consequence of an allowed operation; callers do not submit an arbitrary desired representation
-of those resources.
+Examples include token issuance, treasury distribution, user transfer, treasury payment, and
+registration. A wallet balance, ledger row, or identity binding changes only as a consequence of an
+allowed operation; callers do not submit an arbitrary desired representation of those resources.
 
 The Phase 2 design also requires an adapter to present an ExternalIdentity and execute the delegated
 user action in one trusted request. Splitting identity resolution from execution would create an
@@ -26,10 +25,13 @@ internal User authority.
 
 Earlier Phase 2 design discussion therefore described the trusted boundary in terms of delegated
 use-case endpoints and route-facing Durable Object orchestration rather than generic resource
-manipulation. See issue #4 comments
+manipulation. See the historical issue #4 comments
 [#5696687006](https://github.com/ojiverse/communitytoken/issues/4#issuecomment-5696687006),
 [#5696910043](https://github.com/ojiverse/communitytoken/issues/4#issuecomment-5696910043), and
 [#5724094688](https://github.com/ojiverse/communitytoken/issues/4#issuecomment-5724094688).
+
+The current feature-agnostic core boundary is tracked separately in
+[architecture issue #17](https://github.com/ojiverse/communitytoken/issues/17).
 
 ## Decision
 
@@ -43,7 +45,6 @@ Commands request a domain-defined state transition, for example:
 - issue tokens;
 - distribute treasury reserve;
 - transfer tokens between Users;
-- claim Daily Reward;
 - initiate or complete registration.
 
 Queries request an application-defined observation, for example:
@@ -108,9 +109,12 @@ part of the API model. A procedural command can instead own the complete atomic 
 
 ### Audit history is operation-centric
 
-CommunityToken's ledger and EconomicOperation history explain why current state exists. The
-semantically meaningful operation is therefore a first-class input, not merely an implementation
-detail behind a resource update.
+CommunityToken's ledger and EconomicOperation history explain why current economic state exists. The
+core operation therefore remains first-class input.
+
+This does not require the core to model every external feature reason as a distinct operation kind.
+When an existing core transition already expresses the economic effect, feature-specific eligibility,
+cadence, or business classification stays outside the core.
 
 ### Delegation should remain one trusted operation
 
@@ -120,9 +124,12 @@ A generic identity-resolution resource followed by a second act-as request is de
 
 ### Idempotency belongs to operations
 
-Retry protection is naturally scoped to a logical mutation command. Recording and replaying the
-result of the protected operation in the same transaction is clearer than attaching idempotency
+Retry protection is naturally scoped to one logical core mutation command. Recording and replaying
+the result of the protected operation in the same transaction is clearer than attaching idempotency
 semantics to arbitrary resource replacement.
+
+Idempotency does not make the core responsible for deciding whether independently identified
+commands are business-domain duplicates for an external feature.
 
 ## Consequences
 
@@ -130,8 +137,10 @@ semantics to arbitrary resource replacement.
 - Reads may use route shapes chosen for the delegation/query contract rather than for resource
   retrieval aesthetics.
 - Adding a persisted entity does not imply adding CRUD endpoints for it.
-- New mutation endpoints should name a meaningful domain/application operation and delegate to one
-  authoritative transition path.
+- New mutation endpoints should name a meaningful core domain/application operation and delegate to
+  one authoritative transition path.
+- Feature-specific policy does not imply a new core endpoint or operation kind when an existing core
+  transition already expresses the required state change.
 - New query endpoints should expose only projections allowed by visibility and authorization policy.
 - HTTP semantics still matter: authentication, authorization, media types, status codes,
   idempotency, and error contracts remain explicit and stable.

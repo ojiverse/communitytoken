@@ -101,8 +101,8 @@ describe("routing", () => {
 		}
 	});
 
-	it("returns 404 for routes owned by later PRs, even authenticated", async () => {
-		for (const path of ["/api/v1/daily-reward", "/interactions"]) {
+	it("returns 404 for unknown paths even when authenticated", async () => {
+		for (const path of ["/api/v1/nonexistent", "/unknown-surface"]) {
 			expect((await call(path, { token: DISCORD_TOKEN() })).status).toBe(404);
 		}
 	});

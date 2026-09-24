@@ -25,10 +25,14 @@ Adapter delegation and administrative authority are distinct service principals.
 
 Possession of adapter authority does not imply administrative authority.
 
-Administrative capabilities include explicit issuance, treasury distribution, treasury inspection,
-and Daily Reward policy administration.
+Administrative capabilities include explicit issuance, treasury distribution, and treasury
+inspection.
 
 A generic service principal cannot express those administrative operations.
+
+A future feature-specific service must receive only the authority justified by its concrete core use
+case. This specification does not predeclare a plugin role, generic RBAC model, or delegated treasury
+capability.
 
 ## User actions through adapters
 
@@ -41,6 +45,10 @@ The adapter is not the actor of a user-initiated economic operation; the resolve
 
 There is no two-step protocol in which an adapter first obtains an internal User identifier and then
 uses that identifier as an impersonation credential.
+
+This delegation rule applies to operations for which the User is actually the authorized actor. It
+does not convert a User action at an external feature surface into User authority over treasury
+operations.
 
 ## Public boundary
 

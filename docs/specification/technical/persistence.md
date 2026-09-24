@@ -8,8 +8,8 @@ This specification defines durable guarantees, not a storage schema.
 
 Committed state survives process, instance, or runtime restart.
 
-Ephemeral memory is never the sole authority for balances, identity bindings, eligibility, replay
-state, Daily Reward policy/window history, or economic history.
+Ephemeral memory is never the sole authority for balances, identity bindings, replay state, or
+economic history.
 
 ## Structural constraints
 
@@ -21,9 +21,7 @@ The persistence boundary must make the following invalid states impossible or re
 4. more than one User bound to the same ExternalIdentity;
 5. an economic actor whose kind and identifier presence disagree;
 6. a ledger movement referring to nonexistent required economic state;
-7. a balance outside the WalletBalance domain;
-8. more than one successful Daily Reward claim for the same User and reward window;
-9. more than one Daily Reward claim referring to the same economic operation.
+7. a balance outside the WalletBalance domain.
 
 The unique treasury invariant must hold for each deployment.
 
@@ -35,17 +33,6 @@ Existing economic history is not updated or deleted to express correction.
 
 Persistence must enforce history immutability as a hard structural floor rather than relying only on
 application convention.
-
-## Daily Reward history
-
-Committed Daily Reward policy revisions, materialized reward windows, and successful claim records
-are append-only historical state.
-
-A policy revision does not mutate an existing window. A claim record does not move between windows or
-economic operations after commit.
-
-Persistence must preserve enough information in each materialized window to determine the amount and
-reset phase that governed claims in that window without consulting mutable configuration.
 
 ## Identifier integrity
 

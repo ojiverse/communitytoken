@@ -4,7 +4,7 @@ Economic state changes only through accepted economic operations.
 
 ## Operation kinds
 
-The economic model defines these semantic kinds:
+The economic model defines exactly these semantic kinds:
 
 | Kind | Source | Destination | Supply effect |
 | --- | --- | --- | --- |
@@ -12,10 +12,9 @@ The economic model defines these semantic kinds:
 | DISTRIBUTION | treasury | user | unchanged |
 | P2P_TRANSFER | user | user | unchanged |
 | TREASURY_PAYMENT | user | treasury | unchanged |
-| DAILY_REWARD | treasury | user | unchanged |
 
-Daily Reward eligibility is defined separately in
-[Daily Reward](./daily-reward.md).
+DISTRIBUTION is the generic treasury-to-User movement primitive. The core does not refine it into
+feature-specific kinds based only on why an external feature requested the movement.
 
 ## Transition relation
 
@@ -77,6 +76,14 @@ TOKEN_ISSUANCE is the only transition that may increase supply.
 
 It credits the treasury without a corresponding debit. The treasury-to-treasury ledger relation
 records the movement identity; the operation kind gives it credit-only semantics.
+
+## Distribution
+
+DISTRIBUTION moves existing treasury value to a User and never creates supply.
+
+Eligibility, cadence, scheduling, campaign rules, or business-specific uniqueness that caused a
+caller to request a distribution are outside this economic transition. They must not be inferred from
+metadata or encoded as additional core validity rules without a new core economic requirement.
 
 ## Atomic semantic result
 

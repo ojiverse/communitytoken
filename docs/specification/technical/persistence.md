@@ -7,39 +7,48 @@ This specification defines durable guarantees, not database DDL.
 
 ## Durability
 
-Committed state survives process, instance, or runtime restart.
+Committed Principal, Account, IdentityBinding, default-Account designation, Transaction,
+idempotency, and registration state survive runtime restart.
 
-Ephemeral memory is never the sole authority for Account balances, Principal identity bindings,
-idempotency state, registration state, or Transaction history.
+Ephemeral memory is never the sole authority for those facts.
 
 ## Structural guarantees
 
-Every Account persistently references exactly one existing Principal.
+Every Account references exactly one existing Principal.
 
-No primitive Account kind is required or permitted as the authority for user, treasury, reserve,
-system, or other institutional roles.
+Every ExternalIdentity binds to at most one Principal.
 
-Every ExternalIdentity may bind to at most one Principal.
+Every ISSUE references one existing issuer Principal and one existing destination Account.
 
-A persisted ISSUE identifies an existing destination Account and no source Account.
+Every TRANSFER references existing source and destination Accounts.
 
-A persisted TRANSFER identifies existing source and destination Accounts.
+Persisted monetary values remain inside the monetary domain.
 
-A persisted balance must remain inside the Account-balance monetary domain.
+There is no primitive Account-kind column and no EconomicOperation record paired with Transaction.
 
-Persistence must not require a separate EconomicOperation record paired with each Transaction.
+## Default-Account designation
+
+Default Account is application state, not primitive Account structure.
+
+A Principal may have zero or one default Account designation.
+
+A designation must reference an Account owned by the same Principal.
+
+Registration of a new Principal creates and designates one default Account atomically with the
+IdentityBinding.
+
+No generic application-role registry is required by the current model.
 
 ## Transaction history
 
 Committed Transaction history is append-only.
 
-An existing Transaction is not updated or deleted to express a correction.
+An existing Transaction is never updated or deleted to express a correction.
 
-Persistence must enforce historical immutability as a structural floor rather than relying only on
-application convention.
+ISSUE issuer Principal is immutable with the rest of the Transaction.
 
 Higher-level application, feature, or simulation records may reference a Transaction identifier but
-do not redefine the monetary fact stored by that Transaction.
+do not redefine its monetary fact.
 
 ## Identifier integrity
 
@@ -48,26 +57,13 @@ Internal identifiers are opaque and type-distinct at provider-independent bounda
 An internal identifier must be unique within its entity namespace and must not be derived from mutable
 or provider-specific profile data.
 
-Rehydrating a persisted identifier restores its internal identity; it does not reinterpret an
-external identifier as an internal one.
-
 ## Numeric integrity
 
-Every persisted monetary amount and balance must round-trip exactly within the monetary domain.
+Every persisted monetary amount and balance round-trips exactly within the monetary domain.
 
-A persistence representation that may silently lose integer precision is non-conforming.
+A representation that can silently lose integer precision is non-conforming.
 
 ## Derived data
 
-Indexes, caches, summaries, and projections may exist, but they are not independent authorities for
-underlying Principal, Account, IdentityBinding, or Transaction facts.
-
-If a derived representation disagrees with authoritative persisted state, the authoritative state
-wins.
-
-## Application-designated roles
-
-Persistence may store application state that identifies an ordinary Principal or Account for a
-specific product role, such as the current community reserve.
-
-That designation must not alter primitive Account structure or ISSUE and TRANSFER validity.
+Indexes, caches, summaries, and projections are not independent authorities for underlying durable
+facts.

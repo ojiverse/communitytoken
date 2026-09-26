@@ -16,8 +16,8 @@ OJIverse Cloudflare account for operational simplicity.
 Account co-location must not collapse application, trust, or persistence boundaries. A Cloudflare
 binding grants direct capability to a platform resource, so bindings are part of service authority.
 
-The public deployment also needs two independently deployable Workers on one hostname: CommunityToken
-for the application surface and the Discord adapter for the exact interactions path.
+The public deployment needs two independently deployable Workers on one hostname: CommunityToken for
+the application surface and the Discord adapter for the exact interactions path.
 
 ## Decision
 
@@ -42,11 +42,11 @@ Only CommunityToken may receive bindings granting direct access to CommunityToke
 Other services must not receive the CommunityState binding, direct SQLite access, or future
 CommunityToken-owned persistence bindings.
 
-They must not import persistence implementation in order to mutate Principal, Account, Transaction,
-IdentityBinding, or application state.
+They must not mutate Principal, Account, Transaction, IdentityBinding, or application designation
+state directly.
 
-A service that needs monetary movement requests an authorized application operation that eventually
-produces ISSUE or TRANSFER.
+A service that needs monetary movement requests an authorized CommunityToken application operation
+that eventually produces ISSUE or TRANSFER.
 
 ## Cross-service integration
 
@@ -55,25 +55,28 @@ The default integration boundary is the authenticated CommunityToken HTTP applic
 Cloudflare account co-location must not become a shortcut to shared storage.
 
 A Service Binding may be reconsidered later as a transport choice only when a concrete requirement
-justifies the additional deployment coupling. It does not redefine application semantics.
+justifies the additional deployment coupling.
 
 ## Feature and simulation responsibility
 
-Feature services own feature policy and state such as eligibility, cadence, claims, campaigns, and
-product provenance.
+Feature services own eligibility, cadence, claims, campaigns, and product provenance.
 
 Simulation services own scenario definitions, behavioral agents, policy state, and simulation
 provenance.
 
-Neither layer may redefine Account roles as primitive ledger types or bypass CommunityToken
-persistence. Higher-level records may reference resulting Transaction identifiers.
+Neither layer may bypass CommunityToken persistence or redefine product labels as primitive monetary
+semantics.
+
+Higher-level records may reference Transaction identifiers.
 
 ## Authorization
 
 Resource isolation does not replace application authorization.
 
-A future service receives only the smallest authority required by its concrete use case. Running in
-the same Cloudflare account is never sufficient reason to grant administrative economic authority.
+A future service receives only the smallest authority required by its concrete use case.
+
+Running in the same Cloudflare account is never sufficient reason to grant administrative ISSUE
+authority.
 
 Generic RBAC or plugin infrastructure is not introduced before a concrete consumer requires it.
 
@@ -87,8 +90,8 @@ The adapter calls CommunityToken through ordinary HTTPS requests to token.ojiver
 adapter owns only the exact interactions path, calls to the application API reach the CommunityToken
 origin.
 
-The Phase 2 topology deliberately avoids a wildcard adapter route, global public-fetch compatibility
-flags, and a Service Binding.
+The Phase 2 topology deliberately avoids a wildcard adapter route, public-fetch compatibility flags,
+and a Service Binding.
 
 Production verification belongs to issue #22.
 
@@ -97,29 +100,26 @@ Production verification belongs to issue #22.
 The account remains operationally simple while direct resource authority stays visible in each
 service's bindings.
 
-Plugin or simulation state changes do not require sharing CommunityToken persistence.
+Higher-level service state changes do not require sharing CommunityToken persistence.
 
 A service can later move to another account or runtime without changing the primitive economic model
 as long as the supported application contract remains available.
-
-The cost is that each service owns its own deployment, credentials, migrations, and monitoring.
 
 ## Rejected alternatives
 
 A shared database was rejected because storage representation would become the integration boundary.
 
-Binding CommunityToken persistence directly into plugins or simulations was rejected because it
-bypasses authorization and atomicity.
+Binding CommunityToken persistence directly into other services was rejected because it bypasses
+authorization and atomicity.
 
-Separate Cloudflare accounts for every service are not required initially, though a future
-administrative or blast-radius requirement may justify them.
+Separate Cloudflare accounts for every service are not required initially.
 
 A Service Binding is not the default contract because it couples integration to the current platform
 topology.
 
 ## Documentation boundary
 
-This ADR records Cloudflare-specific architectural rationale.
+This ADR records Cloudflare-specific architecture rationale.
 
 Runtime-independent semantics remain under docs/specification. Verified deployment and secret
-provisioning belong in operations documentation rather than normative specifications.
+provisioning belong in operations documentation.

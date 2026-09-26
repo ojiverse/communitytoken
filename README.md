@@ -2,79 +2,81 @@
 
 CommunityToken is a primitive integer-value ledger and a Discord-first product built on top of it.
 
-The architecture is intentionally smaller than the product. The monetary core preserves only the
-facts required to validate and commit value movement, while product features and economic simulation
-own the reasons those movements occur.
+The monetary core preserves only the facts required to validate and commit value movement. Product
+features and economic simulations own the reasons those movements occur.
 
 ## Architecture
 
 Architecture authority is GitHub issue #17.
 
-The primitive model contains three concepts:
+The primitive model contains:
 
-- Principal: a stable internal owner of Accounts.
-- Account: a non-negative integer balance container.
+- Principal: a stable internal subject that may own Accounts.
+- Account: a non-negative integer balance container owned by one Principal.
 - Transaction: an immutable committed monetary fact.
 
-There are exactly two monetary transaction kinds:
+There are exactly two monetary transaction kinds.
 
-- ISSUE credits one Account and increases total supply by the same amount.
-- TRANSFER moves existing value between Accounts and leaves total supply unchanged.
+ISSUE creates supply. It records the Principal under whose authority supply was issued, the
+destination Account, and the amount.
+
+TRANSFER moves existing value between Accounts and leaves total supply unchanged.
 
 The core does not classify Principals as human, bot, agent, service, organization, community, or
-system. It does not classify Accounts as user, treasury, reserve, escrow, or another institutional
-role.
+system. It does not classify Accounts by product or institutional role.
 
-Distribution, peer-to-peer payment, treasury payment, Daily Reward, campaign reward, compensation,
-and simulation events are higher-level meanings. When they move value, they ultimately request ISSUE
-or TRANSFER through an authorized application boundary.
+Distribution, peer-to-peer payment, rewards, campaigns, and simulation events are higher-level
+meanings. When they move value, they ultimately request ISSUE or TRANSFER through an authorized
+application boundary.
 
-## Identity and current product
+## Identity and default Account
 
-The beta product is Discord-first, but the internal identity model is provider-independent.
+The beta product is Discord-first, but internal identity is provider-independent.
 
 An ExternalIdentity is the exact issuer and subject pair. IdentityBinding associates that pair with a
-Principal. A first successful registration creates a Principal and a product-default Account.
+Principal.
 
-A Principal is not defined as a human. Future non-human or institutional subjects do not require a
-new ledger model.
+The application may designate at most one default Account for a Principal. A first successful
+registration creates a Principal, creates one zero-balance Account, and designates that Account as
+the Principal's default.
 
-The current product also designates an ordinary community Principal and one ordinary Account owned by
-it as the community reserve. The reserve is an application role, not an Account kind.
+The primitive model does not require every Principal to have a default Account.
 
-Initial supply is created explicitly with ISSUE to that reserve. Administrative distribution and
-user-facing transfer are product use cases that perform TRANSFER.
+## Current product
+
+Administrative issuance directly credits the target registered Principal's default Account.
+
+The current administrative authority maps to a stable internal Principal, and that Principal is
+recorded on every ISSUE it authorizes.
+
+User-facing transfer resolves sender and recipient external identities to their Principals and
+default Accounts, then performs TRANSFER.
+
+There is no CommunityToken reserve or treasury Account concept in the current product.
 
 ## Simulation boundary
 
 Economic simulation is a first-class future consumer of the same primitive ledger.
 
-A simulation may define arbitrary Principals, Accounts, institutional roles, behavioral agents,
-policies, schedules, initial conditions, and scenario events. Those rules produce ISSUE and TRANSFER
-requests.
+A simulation may define arbitrary Principals, Accounts, institutions, behavioral agents, policies,
+schedules, initial conditions, and scenario events. Those rules produce ISSUE and TRANSFER requests.
 
-Transaction history is sufficient to reconstruct monetary state. Behavioral and policy provenance
-belongs to the simulation layer and may reference Transaction identifiers.
-
-This permits treasury, reserve, central-bank, market-maker, escrow, or other institutional models to
-be introduced by scenarios without making them permanent ledger primitives.
+Transaction history is sufficient to reconstruct monetary state. Higher-level behavioral or policy
+provenance remains owned by the simulation layer.
 
 ## Roadmap
 
 Current sequencing is:
 
-1. Issue #24 rewrites normative documentation around the primitive architecture.
-2. Issue #25 reconciles source, schema, application contracts, persistence, and tests.
-3. Issue #21 implements the Discord interaction adapter over the reconciled HTTP boundary.
-4. Issue #22 deploys and verifies the production stack.
-5. Issue #5 stabilizes package boundaries, CI/CD, migrations, observability, and operations.
+1. #25 reconciles source, schema, application contracts, persistence, and tests.
+2. #21 implements the Discord interaction adapter over the reconciled HTTP boundary.
+3. #22 deploys and verifies the production stack.
+4. #5 stabilizes package boundaries, CI/CD, migrations, observability, and operations.
 
 Issue #18 is the roadmap source of truth and issue #19 is the Phase 2 tracker.
 
-The documentation on main describes the architecture that implementation must converge to. Until
-issue #25 is merged, source and schema may still contain names from the superseded User, Wallet,
-Treasury, EconomicOperation, LedgerTransaction, and four-operation model. Those names are migration
-residue, not current design authority.
+Documentation describes the architecture implementation must converge to. Until #25 is merged, code
+may contain superseded names and routes. Those are migration residue, not current design authority.
 
 ## Runtime
 
@@ -83,7 +85,6 @@ persistence authority.
 
 Cloudflare is an implementation platform, not part of the primitive domain model.
 
-Services may share one OJIverse Cloudflare account, but mutable resources remain service-owned.
 Only CommunityToken receives direct access to CommunityToken persistence. Other services integrate
 through explicit application or protocol boundaries.
 
@@ -93,19 +94,15 @@ See ADR-0003 for the Cloudflare topology rationale.
 
 Requires Node.js 22 or newer and pnpm 10 or newer.
 
-Install dependencies with pnpm install. Run repository tests with pnpm -r test and type checks with
-pnpm -r check. Formatting and linting use Biome. Secret scanning uses secretlint.
+Use pnpm install, pnpm -r test, and pnpm -r check for the normal repository workflow. Formatting and
+linting use Biome. Secret scanning uses secretlint.
 
 ## Documentation
 
-- docs/specification contains normative semantics and technical invariants.
-- docs/economic-model.md is the entry point into the primitive ledger model.
-- docs/adr contains durable architectural rationale.
-- docs/engineering-principles contains repository-wide reasoning rules.
-- docs/design-policy contains recurring design guidance.
+Normative semantics live under docs/specification. Architecture rationale lives under docs/adr.
+Engineering principles and design policies describe repository-wide reasoning rules.
 
-Normative specifications win over implementation issues for semantics and invariants. Implementation
-work must reconcile the code when it disagrees with the current specification.
+Normative specifications win over implementation issues for semantics and invariants.
 
 ## License
 

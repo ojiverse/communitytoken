@@ -5,32 +5,32 @@ The type system is a design medium.
 Types can express domain concepts, valid states, permitted transitions, and boundary contracts before
 runtime logic is written.
 
-The goal is to make code that contradicts stable design assumptions difficult or impossible to
-compile.
-
-## Type the confirmed distinction
-
-Use distinct types when the distinction is real and stable.
+## Type confirmed distinctions
 
 Principal identifiers, Account identifiers, Transaction identifiers, and ExternalIdentity components
 may share a runtime representation while carrying different meaning.
 
-The type system should preserve that meaning across boundaries.
+The type system should preserve those distinctions.
 
-Do not create a type hierarchy for an unconfirmed taxonomy. Principal kinds or Account roles should
-not appear merely because current product data can be classified that way.
+Do not create a type hierarchy for an unconfirmed Principal or Account taxonomy.
 
-## Encode alternatives precisely
+## Encode primitive alternatives
 
-When a model has real alternatives, represent them explicitly and handle them exhaustively.
-
-ISSUE and TRANSFER are such an alternative because they have different monetary effects and required
+ISSUE and TRANSFER are real alternatives because they have different monetary effects and required
 references.
 
-Distribution, peer-to-peer payment, and treasury payment are not primitive alternatives because they
-share the same TRANSFER monetary semantics.
+An ISSUE type requires issuer Principal, destination Account, and amount.
 
-Types should follow the invariant rather than product labels.
+A TRANSFER type requires source Account, destination Account, and amount.
+
+Product labels such as distribution or reward are not primitive alternatives when they do not change
+the monetary transition.
+
+## Application designation
+
+Default Account is an application relation with an at-most-one invariant per Principal.
+
+It should not be encoded as an Account subtype.
 
 ## External data
 
@@ -39,9 +39,6 @@ Runtime inputs remain untrusted until validated.
 After validation, convert them into the strongest internal type that accurately represents the
 confirmed contract.
 
-Unchecked assertions, broad dynamic types, and accidental string interchange weaken the proof value
-of the type model.
-
 ## Relationship to tests
 
 Static types prove only properties represented in the type system.
@@ -49,8 +46,5 @@ Static types prove only properties represented in the type system.
 Tests remain necessary for arithmetic, persistence, runtime integrations, protocol behavior, and
 concurrency.
 
-Use tests to complement the type model rather than to compensate for distinctions that could have
-been made structurally impossible.
-
-The strongest design uses types for stable structural truth and runtime evidence for properties that
-cannot be proven statically.
+Use tests to complement the type model rather than compensate for distinctions that could have been
+made structurally impossible.

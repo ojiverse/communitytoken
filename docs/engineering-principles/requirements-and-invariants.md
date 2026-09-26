@@ -2,9 +2,6 @@
 
 Design begins with behavior or quality the system must preserve.
 
-Functional requirements describe what the system must do. Non-functional requirements describe
-qualities such as security, consistency, reliability, performance, and operability.
-
 Each requirement should be translated into explicit invariants before implementation details are
 chosen.
 
@@ -18,37 +15,39 @@ Design assigns ownership and mechanisms that preserve the invariant.
 
 Evidence demonstrates that the mechanism works.
 
-Tests and checkers are evidence. They are not the invariant itself.
+Tests and checkers are evidence, not the invariant itself.
 
 ## Prefer the smallest invariant
 
-An invariant should be no broader than the requirement demands.
+CommunityToken must prevent negative balances and unintended supply changes. ISSUE and TRANSFER are
+sufficient monetary primitives for those requirements.
 
-CommunityToken needs to prevent negative balances and unintended supply changes. That requires
-precise ISSUE and TRANSFER rules; it does not require a primitive distinction between distribution,
-peer-to-peer payment, treasury payment, or reward.
+The product also requires supply creation to retain which Principal issued it. That requirement is
+captured narrowly as ISSUE issuer provenance rather than a generic actor model.
 
-Overstating the invariant creates permanent vocabulary from temporary product policy.
+The product requires at most one default Account per Principal. That is an application designation
+invariant, not primitive Account structure.
+
+Overstating an invariant creates permanent vocabulary from temporary policy.
 
 ## Ownership
 
-For each invariant, identify the component with enough information and authority to preserve it.
+Monetary conservation and ISSUE issuer integrity belong to the primitive ledger.
 
-Monetary conservation belongs to the primitive ledger. External identity uniqueness belongs to the
-identity boundary. Product authorization belongs to the application. Feature eligibility belongs to
-the feature. Simulation behavior belongs to the scenario or policy layer.
+External identity uniqueness belongs to the identity boundary.
 
-Moving a rule to a layer that lacks the required knowledge either weakens enforcement or forces
-unrelated concepts into that layer.
+Default Account designation and product authorization belong to the application.
+
+Feature eligibility belongs to the feature.
+
+Simulation behavior belongs to the scenario or policy layer.
 
 ## Evidence
 
-Choose evidence appropriate to the owner.
+Use static types for structural distinctions, unit tests for transitions, persistence tests for
+atomicity and durability, and integration tests for boundary contracts.
 
-Static types can rule out invalid representations. Unit tests can prove transition behavior.
-Persistence tests can prove atomicity and durability. Integration tests can prove boundary contracts.
-
-Do not create multiple independent implementations of the same rule merely to obtain more checks.
+Do not create independent implementations of the same rule merely to obtain more checks.
 
 The preferred assurance path is requirement, invariant, authoritative owner, owning mechanism, then
 observable evidence.

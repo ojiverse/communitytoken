@@ -1,22 +1,19 @@
 # Economic Model
 
-This file is the compatibility entry point for the current economic specification.
+The primitive economic model contains Principal, Account, and Transaction.
 
-The primitive model contains Principal, Account, and Transaction.
+There are exactly two monetary Transaction kinds: ISSUE and TRANSFER.
 
-The only monetary Transaction kinds are ISSUE and TRANSFER.
+ISSUE records the Principal that issued new supply, the destination Account, and the amount.
 
-The ledger intentionally does not encode treasury, distribution, peer-to-peer payment, reward,
-campaign, actor, or simulation-policy meaning as primitive monetary types.
+TRANSFER records source Account, destination Account, and amount.
 
-Read progressively:
+The ledger does not encode distribution, rewards, campaigns, product roles, or simulation policy as
+Transaction kinds.
 
-- Economic State defines Principal, Account, Transaction, monetary domains, and supply.
-- Economic Transitions defines ISSUE, TRANSFER, acceptance, rejection, and self-transfer.
-- Identity defines ExternalIdentity and IdentityBinding to Principal.
-- Application Authority and Visibility defines authorization and product-visibility rules around the
-  primitive ledger.
+A Principal may have an application-designated default Account, but default selection is not primitive
+Account semantics.
 
-System-boundary guarantees live under the technical specifications.
-
-The specification index and authority rules are in docs/specification/README.md.
+Read the domain specifications for economic state, transitions, identity, and application visibility.
+Read the technical specifications for persistence, authentication, registration, idempotency, time,
+and transaction consistency.

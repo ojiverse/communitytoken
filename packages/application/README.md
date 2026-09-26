@@ -2,119 +2,83 @@
 
 This package is the runtime-independent application orchestration layer.
 
-It translates authenticated product actions into identity resolution, authorization, primitive
-ledger commands, projections, and application-level consistency work. It owns no Cloudflare runtime
-types and no primitive monetary rules.
-
-Architecture authority is GitHub issue #17.
+It translates authenticated product actions into identity resolution, authorization, default-Account
+selection, primitive ledger commands, projections, and application-level consistency work.
 
 ## Migration status
 
-The package is being reconciled to the Principal, Account, and Transaction model in issue #25.
+Issue #25 reconciles this package to Principal, Account, Transaction, ISSUE, and TRANSFER.
 
-Until that work merges, source files may still expose superseded User, Wallet, actor, treasury, or
-four-operation types. This README describes the target boundary and should be used when deciding
-whether existing code is migration residue.
+Until then, source may still expose superseded User, Wallet, treasury, actor, distribution, or
+four-operation types.
 
 ## Responsibility boundary
 
-The application layer owns external-identity resolution, selection of application-designated
-Accounts, caller authorization, product use-case mapping, visibility, registration orchestration,
-idempotency composition, and transaction-scoped coordination with persistence.
+The application layer owns ExternalIdentity resolution, technical-caller authorization,
+default-Account designation and selection, product use-case mapping, visibility, registration,
+idempotency, and transaction-scoped coordination.
 
-The primitive economic layer owns only monetary validity and the effects of ISSUE and TRANSFER.
+The primitive economic layer owns monetary validity and the effects of ISSUE and TRANSFER.
 
-The application layer must not recreate ledger arithmetic, supply rules, or balance invariants.
+## Default Account
+
+A Principal may have at most one application-designated default Account.
+
+The designation is application state, not a column or kind that changes primitive Account semantics.
+
+Registration of a new external identity creates one Principal, creates one zero-balance Account, and
+designates it as that Principal's default Account.
+
+A Principal without a default Account cannot use product operations that require one.
 
 ## Product mappings
 
-Administrative issuance maps to ISSUE into the community reserve Account.
+Administrative issuance resolves the target ExternalIdentity to its Principal and default Account,
+then performs ISSUE.
 
-Administrative distribution maps to TRANSFER from the reserve to the recipient's product-default
-Account.
+The authenticated administrative authority maps to one stable internal Principal. That Principal is
+stored as issuer provenance on the committed ISSUE Transaction.
 
-User-facing transfer maps to TRANSFER from the sender's default Account to the recipient's default
-Account.
+User-facing transfer resolves sender and recipient external identities to default Accounts and
+performs TRANSFER.
 
-Balance is a projection of one Account.
+Balance and history project one default Account.
 
-History is a projection of primitive Transactions touching one Account.
-
-Distribution and treasury are application vocabulary, not primitive Transaction or Account kinds.
-
-## Identity
-
-IdentityBinding maps the exact ExternalIdentity pair of issuer and subject to a Principal.
-
-Registration creates one Principal and one product-default Account when the external identity is not
-already bound.
-
-The primitive model permits multiple Accounts per Principal, but Phase 2 does not introduce generic
-Account-management behavior.
-
-The current Discord-first product does not constrain Principal to human subjects.
+There is no administrative distribution or treasury/reserve product role after #25.
 
 ## Authorization
 
-Technical caller identity and domain Principal are distinct concepts.
+Technical caller identity and domain Principal are distinct.
 
-An adapter credential may assert the ExternalIdentity associated with a product action. The
-application resolves that identity and authorizes the requested use case inside one trusted boundary.
+Primitive monetary validity never grants permission. The application authorizes the use case before
+invoking the primitive transition.
 
-Administrative authority is separate from adapter authority.
-
-Primitive economic validity never grants permission. A structurally valid TRANSFER is not authorized
-merely because the source Account contains sufficient funds.
-
-## Unit of work
-
-Every state-changing application operation executes in one serialized atomic section supplied by the
-UnitOfWork boundary.
-
-Repository capabilities are scoped to that section and must not remain usable afterward.
-
-External I/O completes before entering the synchronous critical section.
-
-An outer orchestration may compose identity, idempotency, application records, and one primitive
-ledger mutation in the same atomic section when correctness requires it.
+The current administrative caller is mapped to a stable internal Principal solely so ISSUE
+Transactions retain who issued supply. This does not create a Principal kind.
 
 ## Idempotency
 
-Idempotency protects one logical mutation request from duplicate delivery within the authenticated
-technical-caller namespace.
+Administrative ISSUE, user TRANSFER, and registration-intent creation are protected against duplicate
+delivery.
 
-A successful replayable result and its protected mutation commit together.
+Successful replayable results include the committed Transaction identifier when a monetary mutation
+occurred.
 
-Expected non-mutating failure leaves no successful replay record.
-
-Idempotency does not encode feature eligibility, campaign uniqueness, or simulation-event
-equivalence.
-
-## Persistence ports
-
-After issue #25, application-facing persistence contracts should expose the smallest capabilities
-required for Principal, Account, IdentityBinding, Transaction, registration, and idempotency
-orchestration.
-
-Do not preserve separate EconomicOperation and LedgerTransaction repositories or Account-kind
-contracts solely for compatibility with the superseded model.
-
-Identifier allocation remains a persistence-boundary responsibility unless a concrete requirement
-moves it elsewhere.
+Idempotency provides request correlation and replay protection; it is not the authority for ISSUE
+provenance because issuer Principal is stored on the Transaction itself.
 
 ## History
 
-History is derived from primitive Transactions relative to an Account.
+History is derived from primitive Transactions relative to the caller's default Account.
 
-A projection may describe direction as incoming, outgoing, or self and may identify a counterparty
-Principal when application visibility permits it.
+Internal Principal and Account identifiers are not exposed to the Discord adapter.
 
-The projection must not reconstruct semantic Transaction kinds such as distribution, peer-to-peer
-payment, or treasury payment from direction alone.
+TRANSFER counterparty is the unique same-issuer ExternalIdentity of the other Principal when exactly
+one such binding exists; otherwise it is absent.
+
+Self-transfer uses the caller's exact ExternalIdentity. ISSUE has no counterparty.
 
 ## Runtime independence
 
 This package must not depend on Durable Object APIs, SQLite implementation types, D1, R2, Queues,
 Discord protocol types, or another runtime-specific persistence mechanism.
-
-Runtime adapters implement application ports; they do not redefine primitive semantics.

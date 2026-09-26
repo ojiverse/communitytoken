@@ -1,87 +1,89 @@
 # Economic State
 
 This document defines the authoritative monetary state and the entities on which primitive
-transactions operate.
+Transactions operate.
 
 ## Principal
 
-A Principal is a stable internal owner of Accounts.
+A Principal is a stable internal subject that may own Accounts.
 
 The domain does not classify a Principal as human, bot, AI agent, service, organization, community,
-system, or any other subtype.
-
-A Principal may own zero or more Accounts at the primitive-model level. Product policy may require
-particular Accounts to exist for particular application flows.
+system, or another subtype.
 
 Principal identifiers are opaque and are not external-provider identifiers.
 
 ## Account
 
-An Account is a balance container.
+An Account is a non-negative integer balance container owned by exactly one Principal.
 
-Every Account has exactly one owning Principal and exactly one balance.
+There is no primitive Account kind.
 
-There is no primitive Account kind. Terms such as user account, treasury, reserve, escrow, or system
-account describe application or scenario roles and do not alter monetary validity.
-
-No Account may exist without an owning Principal.
+A higher-level application may designate an Account for a product purpose, but that designation does
+not alter Account structure or primitive monetary validity.
 
 ## Transaction
 
 A Transaction is one accepted immutable monetary transition.
 
-There are exactly two Transaction kinds: ISSUE and TRANSFER.
+There are exactly two kinds: ISSUE and TRANSFER.
 
-An ISSUE identifies one destination Account and one amount.
+An ISSUE records:
 
-A TRANSFER identifies one source Account, one destination Account, and one amount.
+- one issuer Principal;
+- one destination Account;
+- one positive amount;
+- one commit time.
 
-Transaction identity and commit time are durable facts. Actor, feature reason, campaign, policy,
-institutional role, and simulation provenance are not primitive Transaction semantics.
+A TRANSFER records:
 
-Higher-level records may reference a Transaction identifier when they need to retain those meanings.
+- one source Account;
+- one destination Account;
+- one positive amount;
+- one commit time.
+
+The issuer Principal on ISSUE is the durable answer to which Principal created that supply.
+
+It is not a generic actor field. TRANSFER does not acquire an actor merely to mirror application
+authorization or product provenance.
+
+Feature reason, campaign identity, request origin, and simulation-policy provenance remain outside
+primitive Transaction semantics.
 
 ## Structural invariants
 
-Every Account belongs to exactly one Principal.
+Every Account references exactly one existing Principal.
 
-Every Transaction refers only to Accounts that existed for that accepted transition.
+Every ISSUE references one existing issuer Principal and one existing destination Account.
 
-An ISSUE has no source Account.
+Every TRANSFER references existing source and destination Accounts.
 
-A TRANSFER has both source and destination Accounts.
-
-Committed Transaction history is immutable. A later correction is represented by a later valid
-Transaction rather than rewriting historical monetary facts.
+Committed Transaction history is immutable. A later correction is a later valid Transaction rather
+than a rewrite.
 
 ## Monetary domains
 
-The current maximum monetary value is two to the power of fifty-three minus one.
+The maximum monetary value is two to the power of fifty-three minus one.
 
-A transaction amount is an integer from one through that maximum value.
+Transaction amount is an integer from one through that maximum.
 
-An Account balance is an integer from zero through that maximum value.
+Account balance and total supply are integers from zero through that maximum.
 
-Total supply is an integer from zero through that maximum value.
-
-Every accepted transition must leave all affected balances and total supply inside those domains.
+Every accepted transition leaves affected balances and total supply inside those domains.
 
 ## Supply
 
 Total supply is the sum of all Account balances.
 
-Because the current model has no burn primitive, total supply is also the sum of amounts of all
+Because the model currently has no burn primitive, total supply is also the sum of amounts of all
 committed ISSUE Transactions.
 
-These two views must remain equal.
+These views must remain equal.
 
 TRANSFER does not change total supply.
 
-Whether an Account is considered circulating, reserved, locked, or otherwise excluded from an
-application or simulation metric is outside the primitive supply invariant.
+## Initial state
 
-## Initial monetary state
+Before any ISSUE, total supply is zero and every existing Account has zero balance.
 
-Before any ISSUE, total supply is zero and every existing Account balance is zero.
-
-Creating a Principal or Account does not create monetary value and does not create a Transaction.
+Creating a Principal, Account, IdentityBinding, or application default-Account designation creates no
+monetary value and no Transaction.

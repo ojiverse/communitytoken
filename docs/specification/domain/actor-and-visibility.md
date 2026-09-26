@@ -1,76 +1,57 @@
 # Application Authority and Visibility
 
-Primitive monetary validity does not encode actor, product reason, or visibility policy.
+Primitive monetary validity does not encode generic actor, product reason, or visibility policy.
 
-Those concerns belong to the application or higher-level consumer around the ledger.
+One deliberate exception is ISSUE issuer provenance: every ISSUE records the Principal under whose
+authority new supply was created.
 
-## Authority is outside the Transaction
+That issuer is a structural fact of supply creation, not a generic actor model for all Transactions.
 
-An Account owner is not necessarily the authority that caused a monetary transition.
-
-Administrative ISSUE may be authorized by an administrative service while crediting a community
-reserve Account.
-
-A feature service may be authorized to request a TRANSFER from a reserve Account to a recipient
-without becoming the owner of either Account.
-
-A user-facing transfer may be authorized after resolving the invoking ExternalIdentity to a
-Principal and selecting that Principal's product-default Account.
-
-The primitive Transaction therefore does not carry an actor type merely to express application
-authority.
-
-Higher-level application, feature, or simulation records may retain provenance and reference the
-resulting Transaction identifier.
-
-## Technical caller and domain Principal
+## Technical caller and issuer Principal
 
 An authenticated technical caller and a domain Principal are distinct concepts.
 
-An adapter credential proves which service is making a trusted request. An ExternalIdentity supplied
-through that trusted boundary identifies the subject of a user-facing product action.
+The application authorizes administrative issuance and maps the authenticated administrative
+authority to one stable Principal. That Principal is supplied to ISSUE and persisted as issuer
+provenance.
 
-The application resolves that ExternalIdentity to a Principal and authorizes the requested use case.
+Knowledge of a Principal identifier is not an authorization credential.
 
-Possession of a technical credential does not make that service the owner of a Principal's Account,
-and knowledge of a Principal identifier is not an impersonation credential.
+TRANSFER authorization remains entirely application-owned and does not add an actor field to the
+primitive Transaction.
 
-## Product visibility
+## User-facing visibility
 
-The current user-facing product exposes self-only balance and history.
+The current product exposes self-only balance and history for the Principal resolved from the
+caller's ExternalIdentity.
 
-A caller acting for one registered external identity may observe the balance of that Principal's
-product-default Account and Transaction history involving that Account.
+Those operations use the Principal's application-designated default Account.
 
-The normal product surface does not permit selecting another Principal or Account merely by knowing
-an internal identifier.
-
-Inspection of the application-designated community reserve is an administrative capability.
-
-These are application visibility rules, not primitive ledger invariants.
+Internal Principal and Account identifiers are not exposed through the Discord-facing boundary.
 
 ## History direction
 
-History direction is a projection relative to the Account being viewed.
+Direction is relative to the viewed Account.
 
-An ISSUE into the viewed Account is incoming.
+ISSUE into the viewed Account is incoming.
 
-A TRANSFER is incoming when value arrives, outgoing when value leaves, and self when source and
+TRANSFER is incoming when value arrives, outgoing when value leaves, and self when source and
 destination are the viewed Account.
 
 A self-transfer appears once.
 
-Direction is a projection over primitive facts. It must not be used to reconstruct semantic
-Transaction kinds such as distribution, peer-to-peer payment, or treasury payment.
+## Counterparty projection
 
-## Counterparty
+ISSUE has no counterparty.
 
-For a TRANSFER involving the viewed Account, an application projection may expose the Principal that
-owns the other Account when visibility policy allows it.
+For TRANSFER, the application may expose the counterparty as an ExternalIdentity when the other
+Principal has exactly one binding under the same issuer as the caller.
 
-For self-transfer, the counterparty is the same Principal.
+If no such binding exists, or more than one binding exists under that issuer, counterparty is absent.
 
-An ISSUE has no source counterparty.
+For self-transfer, counterparty is the caller's exact ExternalIdentity.
 
-The application may label a designated Account as a community reserve for presentation, but that
-label is not stored as a primitive Account kind.
+This projection intentionally avoids exposing internal Principal or Account identifiers and avoids
+inventing an arbitrary choice among multiple identity bindings.
+
+Whether a future non-Discord surface uses another projection is an application-contract decision.

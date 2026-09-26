@@ -5,62 +5,51 @@ application authority.
 
 ## OIDC identity proof
 
-When OIDC proves an ExternalIdentity, acceptance requires the issuer to match the trusted issuer,
-the token signature to validate under trusted issuer keys, the intended client to be in the audience,
-token lifetime constraints to be valid within the configured tolerance, the nonce to match the
-initiating transaction, and the proven subject to be used exactly as issued.
+When OIDC proves an ExternalIdentity, issuer, signature, audience, lifetime, nonce, and exact subject
+must all validate under the configured trust relationship.
 
 Mutable profile claims do not participate in IdentityBinding.
 
-Key rotation handling must preserve signature trust. An unknown key identifier may justify refreshing
-trusted key material. Failure under a known trusted key is not evidence that an unrelated key should
-be accepted.
-
-## Technical service authority
+## Technical authority
 
 Adapter authority and administrative authority are distinct.
 
-Possession of adapter authority does not imply permission to issue supply, distribute from the
-application-designated reserve, or inspect administrative reserve state.
+Possession of adapter authority does not imply permission to ISSUE.
 
 A future feature or simulation service receives only the application authority justified by its
 concrete use case.
-
-This specification does not predeclare generic plugin roles or a general RBAC framework.
 
 ## Delegated user-facing actions
 
 An authenticated adapter may assert the ExternalIdentity attached to a user-facing action.
 
-CommunityToken resolves that exact identity to a Principal and executes the requested application
-operation within one trusted boundary.
+CommunityToken resolves that exact identity to a Principal and its application-designated default
+Account where required.
 
-The adapter does not first obtain an internal Principal identifier and later reuse it as an
-impersonation credential.
+The adapter does not obtain reusable internal Principal or Account identifiers as impersonation
+credentials.
 
-The application determines which Account the product action may use, such as the resolved
-Principal's default Account.
+## Administrative ISSUE
 
-The primitive ledger then evaluates ISSUE or TRANSFER without interpreting the technical caller.
+The authenticated administrative authority maps to one stable internal Principal.
 
-## Administrative monetary actions
+That mapping is application-owned. The resulting Principal is passed as the issuer of every
+administrative ISSUE and persisted on the Transaction.
 
-Administrative authorization is checked before primitive monetary evaluation.
+The target of administrative ISSUE is resolved from an ExternalIdentity to the target Principal and
+that Principal's default Account.
 
-The fact that ISSUE or TRANSFER would be mathematically valid does not grant permission to request it.
-
-Account ownership or an application role such as reserve likewise does not replace explicit
+Primitive monetary validity checks existence and arithmetic. It does not decide administrative
 authorization.
 
 ## Public boundary
 
-There is no unauthenticated interface where an arbitrary caller may submit an ExternalIdentity and
-act as its Principal.
+There is no unauthenticated interface where an arbitrary caller may submit an ExternalIdentity and act
+as its Principal.
 
-Authentication failure and authorization failure remain distinct conditions.
+Authentication failure and authorization failure remain distinct.
 
 ## Sessions
 
-Long-lived sessions, if introduced, remain authentication mechanisms.
-
-They do not replace Principal and IdentityBinding as identity truth.
+Long-lived sessions, if introduced, remain authentication mechanisms and do not replace Principal and
+IdentityBinding as identity truth.

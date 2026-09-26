@@ -2,12 +2,12 @@ import type { TransactionContext } from "../ports";
 
 /**
  * The identity of one idempotent request (the idempotency specification):
- * the `(servicePrincipal, idempotencyKey)` scope plus the request
+ * the `(technicalCaller, idempotencyKey)` scope plus the request
  * fingerprint identifying exactly which request the key guards. Computed
  * and supplied by the trusted boundary before the serialized section runs.
  */
 export type IdempotencyKeyInfo = {
-	readonly servicePrincipal: string;
+	readonly technicalCaller: string;
 	readonly idempotencyKey: string;
 	readonly fingerprintVersion: string;
 	readonly requestFingerprint: string;
@@ -65,7 +65,7 @@ export function executeIdempotent<R>(
 	execute: () => IdempotentExecution<R>,
 ): IdempotentOutcome<R> {
 	const existing = ctx.idempotencyRecords.find(
-		keyInfo.servicePrincipal,
+		keyInfo.technicalCaller,
 		keyInfo.idempotencyKey,
 	);
 	if (existing !== undefined) {
@@ -77,7 +77,7 @@ export function executeIdempotent<R>(
 	const execution = execute();
 	if (execution.record) {
 		ctx.idempotencyRecords.insert({
-			servicePrincipal: keyInfo.servicePrincipal,
+			technicalCaller: keyInfo.technicalCaller,
 			idempotencyKey: keyInfo.idempotencyKey,
 			fingerprintVersion: keyInfo.fingerprintVersion,
 			requestFingerprint: keyInfo.requestFingerprint,

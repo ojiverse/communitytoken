@@ -1,27 +1,21 @@
 import type { TransactionContext } from "../ports";
 import {
-	type Actor,
-	type AdminActor,
+	type AccountId,
+	type ExternalIdentity,
 	err,
 	type HistoryEntry,
-	type HistoryRow,
 	ok,
 	type Page,
-	persistedActorOf,
-	type TreasuryWalletSelector,
+	type TransactionRecord,
 	type UseCaseResult,
-	type UserActor,
-	type UserWalletSelector,
-	type Wallet,
-	type WalletSelector,
 } from "../types";
-import { forbidden, requireAdmin, TREASURY_ID } from "./shared";
+import { isUnresolved, resolveDefaultAccount } from "./resolve-default-account";
 
 export type HistoryRequest = {
 	readonly cursor?: string | null;
 	/**
-	 * Page size: an integer in `1..100`, default 50 (the actor/visibility specification). Values
-	 * outside the contract are an `invalid-input` failure, never clamped.
+	 * Page size: an integer in `1..100`, default 50. Values outside the
+	 * contract are an `invalid-input` failure, never clamped.
 	 */
 	readonly limit?: number;
 };
@@ -30,10 +24,8 @@ const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
 
 /**
- * Validates `limit` against the actor/visibility specification contract: an integer in `1..100`,
- * defaulting to 50. Out-of-contract values are an `invalid-input` failure —
- * the boundary owns rejecting malformed requests, and this layer does not
- * silently normalize caller input.
+ * Validates `limit`: an integer in `1..100`, defaulting to 50.
+ * Out-of-contract values are an `invalid-input` failure.
  */
 export function historyLimit(
 	limit: number | undefined,
@@ -50,110 +42,102 @@ export function historyLimit(
 }
 
 /**
- * Shapes a join row into the requester-relative history entry of the actor/visibility specification: `direction` is `"self"` for a net-zero self-movement (a
- * `P2P_TRANSFER` whose sides are the subject wallet), `"in"` iff value
- * arrives at the subject, otherwise `"out"`; `counterparty` is the other
- * side's owning user, or `"treasury"` for the system wallet.
+ * The counterparty projection of the actor-and-visibility specification
+ * for one TRANSFER touching the viewed Account:
+ *
+ *   - self-transfer -> the caller's exact ExternalIdentity;
+ *   - otherwise the other Account's owner Principal's ExternalIdentity
+ *     under the caller's issuer, only when exactly one such binding
+ *     exists; zero or several -> none. No arbitrary choice is made.
+ *
+ * @throws {Error} when the other Account does not exist — history rows
+ *   reference existing Accounts by construction.
  */
-export function shapeHistoryEntry(
-	row: HistoryRow,
-	subject: Wallet,
+function transferCounterparty(
+	ctx: TransactionContext,
+	record: TransactionRecord & { readonly kind: "TRANSFER" },
+	viewed: AccountId,
+	caller: ExternalIdentity,
+): ExternalIdentity | null {
+	const other =
+		record.sourceAccountId === viewed
+			? record.destinationAccountId
+			: record.sourceAccountId;
+	if (other === viewed) {
+		return { issuer: caller.issuer, subject: caller.subject };
+	}
+	const account = ctx.accounts.findById(other);
+	if (account === undefined) {
+		throw new Error(`history references a missing account: ${other}`);
+	}
+	const subjects = ctx.identityBindings.listSubjects(
+		account.ownerPrincipalId,
+		caller.issuer,
+	);
+	const [only] = subjects;
+	return subjects.length === 1 && only !== undefined
+		? { issuer: caller.issuer, subject: only }
+		: null;
+}
+
+/**
+ * Shapes a Transaction into the caller-relative entry: direction is `self`
+ * when a TRANSFER's source and destination are the viewed Account, `in`
+ * when value arrives (every ISSUE into it), otherwise `out`. Internal
+ * Principal and Account identifiers never appear in the entry.
+ */
+function shapeEntry(
+	ctx: TransactionContext,
+	record: TransactionRecord,
+	viewed: AccountId,
+	caller: ExternalIdentity,
 ): HistoryEntry {
-	const selfMovement =
-		row.fromWalletId === subject.id && row.toWalletId === subject.id;
-	const direction = selfMovement
-		? row.kind === "P2P_TRANSFER"
+	const base = {
+		transactionId: record.id,
+		kind: record.kind,
+		amount: record.amount,
+		committedAt: record.committedAt,
+	};
+	if (record.kind === "ISSUE") {
+		return { ...base, direction: "in", counterparty: null };
+	}
+	const direction =
+		record.sourceAccountId === viewed && record.destinationAccountId === viewed
 			? "self"
-			: "in"
-		: row.toWalletId === subject.id
-			? "in"
-			: "out";
-	const counterparty = selfMovement
-		? subject.kind === "user"
-			? subject.ownerUserId
-			: "treasury"
-		: row.toWalletId === subject.id
-			? (row.fromOwnerUserId ?? "treasury")
-			: (row.toOwnerUserId ?? "treasury");
+			: record.destinationAccountId === viewed
+				? "in"
+				: "out";
 	return {
-		id: row.id,
-		kind: row.kind,
-		amount: row.amount,
-		fromWalletId: row.fromWalletId,
-		toWalletId: row.toWalletId,
-		metadata: row.metadata,
-		createdAt: row.createdAt,
+		...base,
 		direction,
-		counterparty,
-		...persistedActorOf(row),
+		counterparty: transferCounterparty(ctx, record, viewed, caller),
 	};
 }
 
 /**
- * Newest-first cursor-paginated history of a user wallet under the actor/visibility specification self-only
- * visibility. `TOKEN_ISSUANCE` never appears in a user's history: its ledger
- * movement touches only the treasury wallet, so the wallet filter excludes
- * it by construction.
+ * Newest-first cursor-paginated self-history of the caller's default
+ * Account (actor-and-visibility specification). A self-transfer appears
+ * once. Runs inside the caller's already-open section.
  */
 export function getTransactionHistory(
 	ctx: TransactionContext,
-	actor: UserActor,
-	selector: UserWalletSelector,
-	request: HistoryRequest,
-): UseCaseResult<Page<HistoryEntry>>;
-
-/**
- * Newest-first cursor-paginated treasury history — administrative treasury
- * inspection (the authentication/delegation and actor/visibility specifications): only the `admin-api` principal may express
- * the call. The treasury view does include issuances.
- */
-export function getTransactionHistory(
-	ctx: TransactionContext,
-	actor: AdminActor,
-	selector: TreasuryWalletSelector,
-	request: HistoryRequest,
-): UseCaseResult<Page<HistoryEntry>>;
-
-export function getTransactionHistory(
-	ctx: TransactionContext,
-	actor: Actor,
-	selector: WalletSelector,
+	caller: ExternalIdentity,
 	request: HistoryRequest,
 ): UseCaseResult<Page<HistoryEntry>> {
 	const limit = historyLimit(request.limit);
 	if (typeof limit !== "number") return limit;
-	let subject: Wallet;
-	if (selector.type === "treasury") {
-		const denial = requireAdmin(actor, "getTransactionHistory(treasury)");
-		if (denial) return denial;
-		const treasury = ctx.wallets.findById(TREASURY_ID);
-		if (treasury === undefined) {
-			throw new Error("treasury wallet is missing");
-		}
-		subject = treasury;
-	} else {
-		if (actor.kind !== "user" || actor.userId !== selector.userId) {
-			return forbidden(
-				`getTransactionHistory is self-only: a ${actor.kind} actor cannot read user ${selector.userId}`,
-			);
-		}
-		const wallet = ctx.wallets.findByOwnerUserId(selector.userId);
-		if (wallet === undefined) {
-			return err({
-				type: "rejected",
-				code: "WALLET_NOT_FOUND",
-				detail: `no wallet for user ${selector.userId}`,
-			});
-		}
-		subject = wallet;
-	}
-	const page = ctx.operations.listForWallet(
-		subject.id,
+	const resolved = resolveDefaultAccount(ctx, caller, "caller");
+	if (isUnresolved(resolved)) return err(resolved);
+	const viewed = resolved.account.id;
+	const page = ctx.transactions.listForAccount(
+		viewed,
 		request.cursor ?? null,
 		limit,
 	);
 	return ok({
-		entries: page.entries.map((row) => shapeHistoryEntry(row, subject)),
+		entries: page.entries.map((record) =>
+			shapeEntry(ctx, record, viewed, caller),
+		),
 		nextCursor: page.nextCursor,
 	});
 }

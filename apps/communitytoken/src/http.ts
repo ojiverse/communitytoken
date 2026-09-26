@@ -2,11 +2,11 @@
  * The Worker-side HTTP pipeline of the trusted core API plus the public
  * OIDC callback (issue #4 PR-3/PR-4): exact method+pathname routing, then
  * per-route access — `ServiceRoute` runs Bearer authentication and
- * principal authorization before the handler, `PublicRoute` runs the
- * handler with no principal at all.
+ * caller authorization before the handler, `PublicRoute` runs the
+ * handler with no caller at all.
  *
  * Request-level ordering on service routes is fixed: route match (404) →
- * authenticate (401) → authorize the route's required principal (403) →
+ * authenticate (401) → authorize the route's required caller (403) →
  * media type (415) → JSON object and exact wire shape (400) →
  * Idempotency-Key where required (400) → fingerprint (400 on
  * canonicalization failure) → DO call. Route-facing DO methods return
@@ -24,18 +24,16 @@
  */
 
 import {
-	ADMIN_API_PRINCIPAL,
+	ADMIN_API_CALLER,
 	type CompleteRegistrationOutcome,
 } from "@communitytoken/application";
 import {
 	authenticate,
-	DISCORD_ADAPTER_PRINCIPAL,
-	type ServicePrincipal,
+	DISCORD_ADAPTER_CALLER,
+	type TechnicalCaller,
 } from "./auth";
 import type {
-	AdminDistributeInput,
 	AdminIssueInput,
-	AdminTreasuryHistoryInput,
 	ExternalIdentity,
 	IdempotencyParams,
 	InternalHistoryInput,
@@ -69,82 +67,53 @@ import {
  */
 export interface CommunityStateApi {
 	/**
-	 * `POST /api/v1/balance` for the asserted principal.
+	 * `POST /api/v1/balance` for the asserted caller.
 	 * @returns the route outcome descriptor; never rejects for expected
 	 *   failures.
 	 * @throws {Error} on unexpected storage/contract/runtime failure.
 	 */
 	internalBalance(
-		principal: ServicePrincipal,
+		caller: TechnicalCaller,
 		input: ExternalIdentity,
 	): Promise<RouteResponse>;
 
 	/**
-	 * `POST /api/v1/history` for the asserted principal.
+	 * `POST /api/v1/history` for the asserted caller.
 	 * @returns the route outcome descriptor; never rejects for expected
 	 *   failures.
 	 * @throws {Error} on unexpected storage/contract/runtime failure.
 	 */
 	internalHistory(
-		principal: ServicePrincipal,
+		caller: TechnicalCaller,
 		input: InternalHistoryInput,
 	): Promise<RouteResponse>;
 
 	/**
-	 * `POST /api/v1/transfers` for the asserted principal.
+	 * `POST /api/v1/transfers` for the asserted caller.
 	 * @returns the route outcome descriptor, replayed verbatim when the
 	 *   idempotency record matches; never rejects for expected failures.
 	 * @throws {Error} on unexpected storage/contract/runtime failure.
 	 */
 	internalTransfer(
-		principal: ServicePrincipal,
+		caller: TechnicalCaller,
 		idempotency: IdempotencyParams,
 		input: InternalTransferInput,
 	): Promise<RouteResponse>;
 
 	/**
-	 * `POST /api/v1/admin/issuances` for the asserted principal.
-	 * @returns the route outcome descriptor; never rejects for expected
-	 *   failures.
+	 * `POST /api/v1/admin/issuances` for the asserted caller.
+	 * @returns the route outcome descriptor, replayed verbatim when the
+	 *   idempotency record matches; never rejects for expected failures.
 	 * @throws {Error} on unexpected storage/contract/runtime failure.
 	 */
 	adminIssue(
-		principal: ServicePrincipal,
+		caller: TechnicalCaller,
+		idempotency: IdempotencyParams,
 		input: AdminIssueInput,
 	): Promise<RouteResponse>;
 
 	/**
-	 * `POST /api/v1/admin/distributions` for the asserted principal.
-	 * @returns the route outcome descriptor; never rejects for expected
-	 *   failures.
-	 * @throws {Error} on unexpected storage/contract/runtime failure.
-	 */
-	adminDistribute(
-		principal: ServicePrincipal,
-		input: AdminDistributeInput,
-	): Promise<RouteResponse>;
-
-	/**
-	 * `GET /api/v1/admin/treasury/balance` for the asserted principal.
-	 * @returns the route outcome descriptor; never rejects for expected
-	 *   failures.
-	 * @throws {Error} on unexpected storage/contract/runtime failure.
-	 */
-	adminTreasuryBalance(principal: ServicePrincipal): Promise<RouteResponse>;
-
-	/**
-	 * `GET /api/v1/admin/treasury/history` for the asserted principal.
-	 * @returns the route outcome descriptor; never rejects for expected
-	 *   failures.
-	 * @throws {Error} on unexpected storage/contract/runtime failure.
-	 */
-	adminTreasuryHistory(
-		principal: ServicePrincipal,
-		input: AdminTreasuryHistoryInput,
-	): Promise<RouteResponse>;
-
-	/**
-	 * `POST /api/v1/registration-intents` for the asserted principal
+	 * `POST /api/v1/registration-intents` for the asserted caller
 	 * (issue #4 PR-4). `proof` carries the Worker-generated
 	 * state/nonce/proof-key secret and the authorization URL the `201`
 	 * replay record stores verbatim; the OIDC client secret never crosses
@@ -154,7 +123,7 @@ export interface CommunityStateApi {
 	 * @throws {Error} on unexpected storage/contract/runtime failure.
 	 */
 	apiCreateRegistrationIntent(
-		principal: ServicePrincipal,
+		caller: TechnicalCaller,
 		idempotency: IdempotencyParams,
 		input: ExternalIdentity,
 		proof: RegistrationProofMaterial,
@@ -190,8 +159,9 @@ const DECIMAL_INTEGER = /^(0|[1-9][0-9]*)$/;
 
 /**
  * The `Idempotency-Key` constraint of the idempotency specification:
- * required on `POST /api/v1/transfers`, length `1..255`, the header
- * value used verbatim — never trimmed or normalized.
+ * required on every protected mutation route (transfers, admin
+ * issuances, registration intents), length `1..255`, the header value
+ * used verbatim — never trimmed or normalized.
  */
 const IDEMPOTENCY_KEY_MAX_LENGTH = 255;
 
@@ -218,21 +188,21 @@ type BaseRouteContext = {
 	readonly getStub: () => CommunityStateApi;
 };
 
-/** The context of a public protocol route: deliberately no principal. */
+/** The context of a public protocol route: deliberately no caller. */
 type PublicRouteContext = BaseRouteContext;
 
 /**
  * The context of a service route after Bearer authentication and
- * principal authorization have succeeded: `principal` is the asserted
- * service principal the handler forwards to the DO.
+ * caller authorization have succeeded: `caller` is the asserted
+ * technical caller the handler forwards to the DO.
  */
 type ServiceRouteContext = BaseRouteContext & {
-	readonly principal: ServicePrincipal;
+	readonly caller: TechnicalCaller;
 };
 
 /**
  * A public protocol route (issue #4 PR-4): no authentication runs and the
- * handler receives no principal. Its `unexpectedError` renderer produces
+ * handler receives no caller. Its `unexpectedError` renderer produces
  * the route's fixed failure surface — the OIDC callback's generic HTML
  * page — so an unexpected exception can never leak JSON internals onto a
  * protocol endpoint.
@@ -245,14 +215,14 @@ type PublicRoute = {
 
 /**
  * An authenticated service route: the dispatcher asserts a Bearer
- * credential and checks it equals `requiredPrincipal` (least privilege —
+ * credential and checks it equals `requiredCaller` (least privilege —
  * the admin namespace is lexically nested below `/api/v1` but is a
  * distinct authorization group). `unexpectedError` renders the JSON
  * `500 internal_error` contract.
  */
 type ServiceRoute = {
 	readonly access: "service";
-	readonly requiredPrincipal: ServicePrincipal;
+	readonly requiredCaller: TechnicalCaller;
 	readonly unexpectedError: () => Response;
 	readonly handle: (context: ServiceRouteContext) => Promise<Response>;
 };
@@ -466,99 +436,62 @@ function validateTransfersBody(
 function validateIssueBody(
 	body: Record<string, unknown>,
 ): Validation<AdminIssueInput> {
-	const extra = unknownField(body, ["amount", "metadata"]);
+	const extra = unknownField(body, ["target", "amount"]);
 	if (extra !== null) {
 		return invalidRequest(`unknown field: ${extra}`);
 	}
+	const target = validateIdentity(body["target"], "target");
+	if (!target.ok) return target;
 	const amount = body["amount"];
 	if (typeof amount !== "number" || !Number.isFinite(amount)) {
 		return invalidRequest("amount must be a finite JSON number");
 	}
-	const input: { amount: number; metadata?: string } = { amount };
-	if (body["metadata"] !== undefined) {
-		const metadata = body["metadata"];
-		if (typeof metadata !== "string") {
-			return invalidRequest("metadata must be a string");
-		}
-		input.metadata = metadata;
-	}
-	return valid(input);
-}
-
-function validateDistributeBody(
-	body: Record<string, unknown>,
-): Validation<AdminDistributeInput> {
-	const extra = unknownField(body, ["issuer", "subject", "amount", "metadata"]);
-	if (extra !== null) {
-		return invalidRequest(`unknown field: ${extra}`);
-	}
-	if (!isNonEmptyString(body["issuer"]) || !isNonEmptyString(body["subject"])) {
-		return invalidRequest("body requires non-empty string issuer and subject");
-	}
-	const amount = body["amount"];
-	if (typeof amount !== "number" || !Number.isFinite(amount)) {
-		return invalidRequest("amount must be a finite JSON number");
-	}
-	const input: {
-		issuer: string;
-		subject: string;
-		amount: number;
-		metadata?: string;
-	} = { issuer: body["issuer"], subject: body["subject"], amount };
-	if (body["metadata"] !== undefined) {
-		const metadata = body["metadata"];
-		if (typeof metadata !== "string") {
-			return invalidRequest("metadata must be a string");
-		}
-		input.metadata = metadata;
-	}
-	return valid(input);
+	return valid({ target: target.value, amount });
 }
 
 /**
- * Validates the `cursor`/`limit` query parameters of
- * `GET /api/v1/admin/treasury/history`: the same fixed grammar and range as the
- * POST history body's fields, never clamped.
+ * The protected-mutation steps after wire-shape validation: the
+ * `Idempotency-Key` header (400 `idempotency_key_required` when absent or
+ * outside `1..255`), then fingerprint v1 over the parsed body (400
+ * `invalid_request` on canonicalization failure). Both run before the DO
+ * call because SHA-256 is asynchronous.
  */
-function validateHistoryQuery(url: URL): Validation<AdminTreasuryHistoryInput> {
-	const input: { cursor?: string; limit?: number } = {};
-	const cursor = url.searchParams.get("cursor");
-	if (cursor !== null) {
-		if (!isDecimalCursor(cursor)) {
-			return invalid(
-				errorResponse(
-					400,
-					"invalid_cursor",
-					"cursor must be a decimal cursor string",
-				),
-			);
-		}
-		input.cursor = cursor;
+async function readIdempotency(
+	request: Request,
+	url: URL,
+	body: Record<string, unknown>,
+): Promise<Validation<IdempotencyParams>> {
+	const key = request.headers.get("Idempotency-Key");
+	if (
+		key === null ||
+		key.length === 0 ||
+		key.length > IDEMPOTENCY_KEY_MAX_LENGTH
+	) {
+		return invalid(
+			errorResponse(
+				400,
+				"idempotency_key_required",
+				"Idempotency-Key header must be present and 1..255 characters",
+			),
+		);
 	}
-	const rawLimit = url.searchParams.get("limit");
-	if (rawLimit !== null) {
-		if (!DECIMAL_INTEGER.test(rawLimit)) {
-			return invalid(
-				errorResponse(
-					400,
-					"invalid_limit",
-					"limit must be a decimal integer in 1..100",
-				),
-			);
+	try {
+		const requestFingerprint = await requestFingerprintV1(
+			request.method,
+			url.pathname,
+			body,
+		);
+		return valid({
+			key,
+			fingerprintVersion: FINGERPRINT_VERSION,
+			requestFingerprint,
+		});
+	} catch (error) {
+		if (error instanceof CanonicalizationError) {
+			return invalidRequest("request body cannot be canonically serialized");
 		}
-		const limit = Number(rawLimit);
-		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
-			return invalid(
-				errorResponse(
-					400,
-					"invalid_limit",
-					"limit must be an integer in 1..100",
-				),
-			);
-		}
-		input.limit = limit;
+		throw error;
 	}
-	return valid(input);
 }
 
 /**
@@ -583,126 +516,71 @@ function jsonInternalError(): Response {
 
 const internalBalanceRoute: ServiceRoute = {
 	access: "service",
-	requiredPrincipal: DISCORD_ADAPTER_PRINCIPAL,
+	requiredCaller: DISCORD_ADAPTER_CALLER,
 	unexpectedError: jsonInternalError,
-	async handle({ request, principal, getStub }) {
+	async handle({ request, caller, getStub }) {
 		const body = await readJsonObject(request);
 		if (!body.ok) return body.response;
 		const input = validateBalanceBody(body.value);
 		if (!input.ok) return input.response;
 		const stub = getStub();
-		return invoke(() => stub.internalBalance(principal, input.value));
+		return invoke(() => stub.internalBalance(caller, input.value));
 	},
 };
 
 const internalHistoryRoute: ServiceRoute = {
 	access: "service",
-	requiredPrincipal: DISCORD_ADAPTER_PRINCIPAL,
+	requiredCaller: DISCORD_ADAPTER_CALLER,
 	unexpectedError: jsonInternalError,
-	async handle({ request, principal, getStub }) {
+	async handle({ request, caller, getStub }) {
 		const body = await readJsonObject(request);
 		if (!body.ok) return body.response;
 		const input = validateHistoryBody(body.value);
 		if (!input.ok) return input.response;
 		const stub = getStub();
-		return invoke(() => stub.internalHistory(principal, input.value));
+		return invoke(() => stub.internalHistory(caller, input.value));
 	},
 };
 
 const internalTransfersRoute: ServiceRoute = {
 	access: "service",
-	requiredPrincipal: DISCORD_ADAPTER_PRINCIPAL,
+	requiredCaller: DISCORD_ADAPTER_CALLER,
 	unexpectedError: jsonInternalError,
-	async handle({ request, url, principal, getStub }) {
+	async handle({ request, url, caller, getStub }) {
 		const body = await readJsonObject(request);
 		if (!body.ok) return body.response;
 		const input = validateTransfersBody(body.value);
 		if (!input.ok) return input.response;
-		const key = request.headers.get("Idempotency-Key");
-		if (
-			key === null ||
-			key.length === 0 ||
-			key.length > IDEMPOTENCY_KEY_MAX_LENGTH
-		) {
-			return errorResponse(
-				400,
-				"idempotency_key_required",
-				"Idempotency-Key header must be present and 1..255 characters",
-			);
-		}
-		let requestFingerprint: string;
-		try {
-			requestFingerprint = await requestFingerprintV1(
-				request.method,
-				url.pathname,
-				body.value,
-			);
-		} catch (error) {
-			if (error instanceof CanonicalizationError) {
-				return errorResponse(
-					400,
-					"invalid_request",
-					"request body cannot be canonically serialized",
-				);
-			}
-			throw error;
-		}
+		const idempotency = await readIdempotency(request, url, body.value);
+		if (!idempotency.ok) return idempotency.response;
 		const stub = getStub();
 		return invoke(() =>
-			stub.internalTransfer(
-				principal,
-				{ key, fingerprintVersion: FINGERPRINT_VERSION, requestFingerprint },
-				input.value,
-			),
+			stub.internalTransfer(caller, idempotency.value, input.value),
 		);
 	},
 };
 
+/**
+ * `POST /api/v1/admin/issuances`: the administrative ISSUE route. Same
+ * fixed order as the transfer route — wire shape, then Idempotency-Key,
+ * then fingerprint — so a duplicate delivery replays the stored
+ * `transaction_id` instead of issuing twice.
+ */
 const adminIssueRoute: ServiceRoute = {
 	access: "service",
-	requiredPrincipal: ADMIN_API_PRINCIPAL,
+	requiredCaller: ADMIN_API_CALLER,
 	unexpectedError: jsonInternalError,
-	async handle({ request, principal, getStub }) {
+	async handle({ request, url, caller, getStub }) {
 		const body = await readJsonObject(request);
 		if (!body.ok) return body.response;
 		const input = validateIssueBody(body.value);
 		if (!input.ok) return input.response;
+		const idempotency = await readIdempotency(request, url, body.value);
+		if (!idempotency.ok) return idempotency.response;
 		const stub = getStub();
-		return invoke(() => stub.adminIssue(principal, input.value));
-	},
-};
-
-const adminDistributeRoute: ServiceRoute = {
-	access: "service",
-	requiredPrincipal: ADMIN_API_PRINCIPAL,
-	unexpectedError: jsonInternalError,
-	async handle({ request, principal, getStub }) {
-		const body = await readJsonObject(request);
-		if (!body.ok) return body.response;
-		const input = validateDistributeBody(body.value);
-		if (!input.ok) return input.response;
-		const stub = getStub();
-		return invoke(() => stub.adminDistribute(principal, input.value));
-	},
-};
-
-const adminTreasuryBalanceRoute: ServiceRoute = {
-	access: "service",
-	requiredPrincipal: ADMIN_API_PRINCIPAL,
-	unexpectedError: jsonInternalError,
-	handle({ principal, getStub }) {
-		return invoke(() => getStub().adminTreasuryBalance(principal));
-	},
-};
-
-const adminTreasuryHistoryRoute: ServiceRoute = {
-	access: "service",
-	requiredPrincipal: ADMIN_API_PRINCIPAL,
-	unexpectedError: jsonInternalError,
-	handle({ url, principal, getStub }) {
-		const query = validateHistoryQuery(url);
-		if (!query.ok) return Promise.resolve(query.response);
-		return invoke(() => getStub().adminTreasuryHistory(principal, query.value));
+		return invoke(() =>
+			stub.adminIssue(caller, idempotency.value, input.value),
+		);
 	},
 };
 
@@ -717,9 +595,9 @@ const adminTreasuryHistoryRoute: ServiceRoute = {
  */
 const registrationIntentsRoute: ServiceRoute = {
 	access: "service",
-	requiredPrincipal: DISCORD_ADAPTER_PRINCIPAL,
+	requiredCaller: DISCORD_ADAPTER_CALLER,
 	unexpectedError: jsonInternalError,
-	async handle({ request, url, env, principal, getStub }) {
+	async handle({ request, url, env, caller, getStub }) {
 		const body = await readJsonObject(request);
 		if (!body.ok) return body.response;
 		const input = validateIdentity(body.value, "body");
@@ -733,35 +611,8 @@ const registrationIntentsRoute: ServiceRoute = {
 				"issuer is not the configured trusted issuer",
 			);
 		}
-		const key = request.headers.get("Idempotency-Key");
-		if (
-			key === null ||
-			key.length === 0 ||
-			key.length > IDEMPOTENCY_KEY_MAX_LENGTH
-		) {
-			return errorResponse(
-				400,
-				"idempotency_key_required",
-				"Idempotency-Key header must be present and 1..255 characters",
-			);
-		}
-		let requestFingerprint: string;
-		try {
-			requestFingerprint = await requestFingerprintV1(
-				request.method,
-				url.pathname,
-				body.value,
-			);
-		} catch (error) {
-			if (error instanceof CanonicalizationError) {
-				return errorResponse(
-					400,
-					"invalid_request",
-					"request body cannot be canonically serialized",
-				);
-			}
-			throw error;
-		}
+		const idempotency = await readIdempotency(request, url, body.value);
+		if (!idempotency.ok) return idempotency.response;
 		const secrets = generateRegistrationSecrets();
 		const challenge = await computeProofKeyChallenge(secrets.proofKeySecret);
 		const authorizationUrl = buildAuthorizationUrl(
@@ -772,12 +623,8 @@ const registrationIntentsRoute: ServiceRoute = {
 		);
 		return invoke(() =>
 			getStub().apiCreateRegistrationIntent(
-				principal,
-				{
-					key,
-					fingerprintVersion: FINGERPRINT_VERSION,
-					requestFingerprint,
-				},
+				caller,
+				idempotency.value,
 				input.value,
 				{ ...secrets, authorizationUrl },
 			),
@@ -810,9 +657,6 @@ const ROUTES: Readonly<Record<string, Route>> = {
 	"POST /api/v1/history": internalHistoryRoute,
 	"POST /api/v1/transfers": internalTransfersRoute,
 	"POST /api/v1/admin/issuances": adminIssueRoute,
-	"POST /api/v1/admin/distributions": adminDistributeRoute,
-	"GET /api/v1/admin/treasury/balance": adminTreasuryBalanceRoute,
-	"GET /api/v1/admin/treasury/history": adminTreasuryHistoryRoute,
 };
 
 /**
@@ -822,7 +666,7 @@ const ROUTES: Readonly<Record<string, Route>> = {
  * is broken. After the match, access dispatch splits by route kind:
  * public routes run their handler directly; service routes authenticate
  * the Bearer credential (401), check it against the route's required
- * principal (403), then run the handler with the asserted principal.
+ * caller (403), then run the handler with the asserted caller.
  * Any unexpected exception after the match — Worker-side or RPC —
  * resolves through the route's own renderer: JSON `500 internal_error`
  * on service routes, the generic HTML 500 page on the public callback.
@@ -850,21 +694,21 @@ export async function handleRequest(
 		}
 	}
 	try {
-		const principal = await authenticate(request, {
+		const caller = await authenticate(request, {
 			adminApiToken: env.ADMIN_API_TOKEN,
 			discordAdapterToken: env.DISCORD_ADAPTER_SERVICE_TOKEN,
 		});
-		if (principal === null) {
+		if (caller === null) {
 			return errorResponse(401, "unauthorized", "authentication failed");
 		}
-		if (principal !== route.requiredPrincipal) {
+		if (caller !== route.requiredCaller) {
 			return errorResponse(
 				403,
 				"forbidden",
-				"the principal is not authorized for this route",
+				"the caller is not authorized for this route",
 			);
 		}
-		return await route.handle({ ...context, principal });
+		return await route.handle({ ...context, caller });
 	} catch {
 		return route.unexpectedError();
 	}

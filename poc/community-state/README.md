@@ -26,6 +26,10 @@ Principal, Account, and Transaction architecture.
 Those artifacts must not be copied into production or treated as normative merely because the PoC
 still compiles.
 
+Since #25 the PoC no longer runs the shared economic contract suite: that suite now pins the
+primitive ISSUE / TRANSFER semantics, which this superseded four-operation implementation does not
+model. The PoC keeps only its own Durable Object mechanics tests.
+
 The current normative model lives under docs/specification. Implementation reconciliation is tracked
 by issue #25.
 

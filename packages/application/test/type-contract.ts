@@ -1,89 +1,81 @@
 /**
- * Compile-time negative coverage for the types-as-design contract (the identity, authentication/delegation,
- * actor/visibility, and persistence specifications). Every `@ts-expect-error` below must remain a type
- * error: if a public signature is accidentally weakened, `tsc --noEmit`
- * reports the directive as unused and `pnpm check` fails. This file is
- * never executed — vitest only runs `*.spec.ts`.
+ * Compile-time negative coverage for the types-as-design contract (the
+ * identity, economic-state, and persistence specifications). Every
+ * `@ts-expect-error` below must remain a type error: if a public signature
+ * is accidentally weakened, `tsc --noEmit` reports the directive as unused
+ * and `pnpm check` fails. This file is never executed — vitest only runs
+ * `*.spec.ts`.
  */
-import type { CommunityTokenApplication } from "../src/application";
 import {
-	ADMIN_API_PRINCIPAL,
-	type AdminActor,
-	type OperationRecord,
+	type AccountId,
+	ADMIN_API_CALLER,
+	type PrincipalId,
 	rehydrate,
-	type ServiceActor,
-	TREASURY_SELECTOR,
+	type TransactionContext,
+	type TransactionRecord,
 	type UnitOfWork,
-	type UserActor,
-	type UserId,
-	userSelector,
-	type WalletId,
 } from "../src/index";
+import { issueToIdentity } from "../src/use-cases/issue-to-identity";
 
 export function forbiddenByType(
-	app: CommunityTokenApplication,
+	ctx: TransactionContext,
 	uow: UnitOfWork,
 ): readonly unknown[] {
 	const results: unknown[] = [];
 
-	// @ts-expect-error a plain string is not a UserId
-	const uidFromString: UserId = "alice";
-	// @ts-expect-error a WalletId is not a UserId
-	const uidFromWallet: UserId = rehydrate.walletId("wallet-1");
-	// @ts-expect-error a UserId is not a WalletId
-	const widFromUser: WalletId = rehydrate.userId("alice");
-	results.push(uidFromString, uidFromWallet, widFromUser);
+	// @ts-expect-error a plain string is not a PrincipalId
+	const pidFromString: PrincipalId = "alice";
+	// @ts-expect-error an AccountId is not a PrincipalId
+	const pidFromAccount: PrincipalId = rehydrate.accountId("account-1");
+	// @ts-expect-error a PrincipalId is not an AccountId
+	const aidFromPrincipal: AccountId = rehydrate.principalId("principal-1");
+	results.push(pidFromString, pidFromAccount, aidFromPrincipal);
 
-	const alice = rehydrate.userId("alice");
-	const aliceActor: UserActor = { kind: "user", userId: alice };
-	const discordAdapter: ServiceActor = {
-		kind: "service",
-		principalId: "discord-adapter",
-	};
-	// @ts-expect-error a non-admin service principal cannot issue
-	results.push(app.issueToken(discordAdapter, { amount: 1 }));
+	const alice = { issuer: "https://issuer.test", subject: "alice" };
 	results.push(
-		// @ts-expect-error a non-admin service principal cannot distribute
-		app.distributeToken(discordAdapter, { toUserId: alice, amount: 1 }),
+		// @ts-expect-error the adapter technical caller cannot issue
+		issueToIdentity(ctx, "discord-adapter", { target: alice, amount: 1 }),
+	);
+	results.push(
+		issueToIdentity(ctx, ADMIN_API_CALLER, {
+			target: alice,
+			amount: 1,
+			// @ts-expect-error administrative issuance carries no legacy metadata
+			metadata: "welcome bonus",
+		}),
 	);
 
-	// @ts-expect-error a user actor cannot read the treasury balance
-	results.push(app.getBalance(aliceActor, TREASURY_SELECTOR));
-	results.push(
-		// @ts-expect-error a user actor cannot read the treasury history
-		app.getTransactionHistory(aliceActor, TREASURY_SELECTOR, {}),
-	);
-
-	const admin: AdminActor = {
-		kind: "service",
-		principalId: ADMIN_API_PRINCIPAL,
+	// @ts-expect-error an ISSUE cannot omit its issuer Principal
+	const issueWithoutIssuer: TransactionRecord = {
+		id: rehydrate.transactionId("tx-1"),
+		kind: "ISSUE",
+		issuerPrincipalId: null,
+		sourceAccountId: null,
+		destinationAccountId: rehydrate.accountId("account-1"),
+		amount: 1,
+		committedAt: 0,
 	};
-	// @ts-expect-error the admin principal cannot read a user balance
-	results.push(app.getBalance(admin, userSelector(alice)));
-	results.push(
-		// @ts-expect-error the admin principal cannot read a user history
-		app.getTransactionHistory(admin, userSelector(alice), {}),
-	);
-
-	// @ts-expect-error a system actor cannot carry an id
-	const systemWithId: OperationRecord = {
-		id: rehydrate.operationId("op-1"),
-		kind: "TOKEN_ISSUANCE",
-		metadata: null,
-		actorKind: "system",
-		actorId: "alice",
-		createdAt: 0,
+	// @ts-expect-error a TRANSFER cannot carry an issuer Principal
+	const transferWithIssuer: TransactionRecord = {
+		id: rehydrate.transactionId("tx-2"),
+		kind: "TRANSFER",
+		issuerPrincipalId: rehydrate.principalId("principal-1"),
+		sourceAccountId: rehydrate.accountId("account-1"),
+		destinationAccountId: rehydrate.accountId("account-2"),
+		amount: 1,
+		committedAt: 0,
 	};
-	// @ts-expect-error a user actor cannot have a null id
-	const userWithNullId: OperationRecord = {
-		id: rehydrate.operationId("op-2"),
-		kind: "P2P_TRANSFER",
-		metadata: null,
-		actorKind: "user",
-		actorId: null,
-		createdAt: 0,
+	// @ts-expect-error an ISSUE has no source Account
+	const issueWithSource: TransactionRecord = {
+		id: rehydrate.transactionId("tx-3"),
+		kind: "ISSUE",
+		issuerPrincipalId: rehydrate.principalId("principal-1"),
+		sourceAccountId: rehydrate.accountId("account-1"),
+		destinationAccountId: rehydrate.accountId("account-2"),
+		amount: 1,
+		committedAt: 0,
 	};
-	results.push(systemWithId, userWithNullId);
+	results.push(issueWithoutIssuer, transferWithIssuer, issueWithSource);
 
 	// @ts-expect-error async transaction callbacks are forbidden
 	results.push(uow.transact(async () => 1));

@@ -23,7 +23,7 @@
  * The lifetime/thenable helpers live here rather than in
  * `@communitytoken/application`: with only two `UnitOfWork`
  * implementations, widening the package API for shared helpers is not
- * justified (issue #4 PR-2).
+ * justified.
  */
 
 import type {
@@ -34,13 +34,14 @@ import type {
 	UnitOfWork,
 } from "@communitytoken/application";
 import {
+	createAccountRepository,
+	createAdministrativeIssuerRepository,
+	createDefaultAccountRepository,
 	createIdempotencyRepository,
 	createIdentityBindingRepository,
-	createLedgerRepository,
-	createOperationRepository,
+	createPrincipalRepository,
 	createRegistrationIntentRepository,
-	createUserRepository,
-	createWalletRepository,
+	createTransactionRepository,
 } from "./repositories";
 
 /**
@@ -156,12 +157,15 @@ export function createStorageUnitOfWork(
 			try {
 				return storage.transactionSync(() => {
 					const scope: TransactionScope = {
-						wallets: createWalletRepository(storage.sql),
-						operations: createOperationRepository(storage.sql),
-						ledger: createLedgerRepository(storage.sql),
+						principals: createPrincipalRepository(storage.sql),
+						accounts: createAccountRepository(storage.sql),
+						defaultAccounts: createDefaultAccountRepository(storage.sql),
+						transactions: createTransactionRepository(storage.sql),
 						identityBindings: createIdentityBindingRepository(storage.sql),
+						administrativeIssuer: createAdministrativeIssuerRepository(
+							storage.sql,
+						),
 						idempotencyRecords: createIdempotencyRepository(storage.sql),
-						users: createUserRepository(storage.sql),
 						registrationIntents: createRegistrationIntentRepository(
 							storage.sql,
 						),
@@ -169,28 +173,13 @@ export function createStorageUnitOfWork(
 					// The section's single authoritative clock sample, taken after
 					// transaction entry and before any caller code runs.
 					const nowMs = clock.nowMs();
-					const ctx = guardContext(
-						{
-							nowMs,
-							wallets: guardRepository(scope.wallets, assertOpen),
-							operations: guardRepository(scope.operations, assertOpen),
-							ledger: guardRepository(scope.ledger, assertOpen),
-							identityBindings: guardRepository(
-								scope.identityBindings,
-								assertOpen,
-							),
-							idempotencyRecords: guardRepository(
-								scope.idempotencyRecords,
-								assertOpen,
-							),
-							users: guardRepository(scope.users, assertOpen),
-							registrationIntents: guardRepository(
-								scope.registrationIntents,
-								assertOpen,
-							),
-						},
-						assertOpen,
-					);
+					const guarded = Object.fromEntries(
+						Object.entries(scope).map(([name, repository]) => [
+							name,
+							guardRepository(repository, assertOpen),
+						]),
+					) as TransactionScope;
+					const ctx = guardContext({ nowMs, ...guarded }, assertOpen);
 					const result = work(ctx);
 					if (isPromiseLike(result)) {
 						throw new Error(

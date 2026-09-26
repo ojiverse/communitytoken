@@ -14,8 +14,8 @@ does not define a default Account, treasury, reserve, or other Account role.
 Normative semantics live under docs/specification. ADRs explain durable architectural choices.
 GitHub issues own sequencing and implementation work.
 
-Until issue #25 is complete, source and schema may still contain superseded User, Wallet, Treasury,
-EconomicOperation, LedgerTransaction, distribution, or four-operation terminology. Do not extend
-those concepts merely because they remain in code.
+Issue #25 reconciled production source and schema with this model. Superseded User, Wallet,
+Treasury, EconomicOperation, LedgerTransaction, distribution, or four-operation terminology remains
+only in the historical poc/community-state package; do not reintroduce or extend it.
 
-The current implementation sequence is #25, #21, #22, then Phase 3 issue #5.
+The remaining implementation sequence is #21, #22, then Phase 3 issue #5.

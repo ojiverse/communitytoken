@@ -1,82 +1,63 @@
 import { describe, expect, it } from "vitest";
-import { TREASURY_SELECTOR, userId, userSelector } from "../src/types";
-import {
-	ADMIN,
-	asAdmin,
-	asUser,
-	OTHER_SERVICE,
-	SYSTEM,
-	userActor,
-} from "./fixtures";
-import { createInMemoryFixture } from "./in-memory";
+import { ADMIN_API_CALLER } from "../src/types";
+import { getBalance } from "../src/use-cases/get-balance";
+import { issueToIdentity } from "../src/use-cases/issue-to-identity";
+import { createInMemoryFixture, TEST_ISSUER } from "./in-memory";
 
+/** Self-only balance of the caller's default Account (actor-and-visibility specification). */
 describe("getBalance", () => {
-	it("a user reads their own balance", () => {
-		const { app, seedUser } = createInMemoryFixture();
-		seedUser("alice");
-		app.issueToken(ADMIN, { amount: 100 });
-		app.distributeToken(ADMIN, { toUserId: userId("alice"), amount: 40 });
+	it("reads the caller Principal's default Account balance", () => {
+		const fx = createInMemoryFixture();
+		const alice = fx.seedIdentity("alice");
+		fx.uow.transact((ctx) =>
+			issueToIdentity(ctx, ADMIN_API_CALLER, {
+				target: alice.identity,
+				amount: 25,
+			}),
+		);
+		fx.seedAccount(alice.principalId, 7);
 
-		const r = app.getBalance(userActor("alice"), userSelector(userId("alice")));
+		const r = fx.uow.transact((ctx) => getBalance(ctx, alice.identity));
 
-		expect(r).toEqual({ ok: true, value: { balance: 40 } });
+		expect(r).toEqual({ ok: true, value: { balance: 25 } });
 	});
 
-	it("a user cannot read another user's balance", () => {
-		const { app, seedUser } = createInMemoryFixture();
-		seedUser("alice");
-		seedUser("bob");
+	it("reports an unbound caller identity", () => {
+		const fx = createInMemoryFixture();
 
-		const r = app.getBalance(userActor("alice"), userSelector(userId("bob")));
-
-		expect(r).toMatchObject({ ok: false, error: { type: "forbidden" } });
-	});
-
-	it.each([
-		["service", ADMIN],
-		["system", SYSTEM],
-	] as const)("a %s actor cannot read a user wallet", (_label, actor) => {
-		const { app, seedUser } = createInMemoryFixture();
-		seedUser("alice");
-
-		const r = app.getBalance(asUser(actor), userSelector(userId("alice")));
-
-		expect(r).toMatchObject({ ok: false, error: { type: "forbidden" } });
-	});
-
-	it("the admin-api principal reads the treasury balance", () => {
-		const { app } = createInMemoryFixture();
-		app.issueToken(ADMIN, { amount: 250 });
-
-		const r = app.getBalance(ADMIN, TREASURY_SELECTOR);
-
-		expect(r).toEqual({ ok: true, value: { balance: 250 } });
-	});
-
-	it.each([
-		["user", () => userActor("alice")],
-		["non-admin service", () => OTHER_SERVICE],
-		["system", () => SYSTEM],
-	] as const)(
-		"a %s actor cannot read the treasury balance",
-		(_label, actor) => {
-			const { app } = createInMemoryFixture();
-			app.issueToken(ADMIN, { amount: 250 });
-
-			const r = app.getBalance(asAdmin(actor()), TREASURY_SELECTOR);
-
-			expect(r).toMatchObject({ ok: false, error: { type: "forbidden" } });
-		},
-	);
-
-	it("reports WALLET_NOT_FOUND for a user that owns no wallet", () => {
-		const { app } = createInMemoryFixture();
-
-		const r = app.getBalance(userActor("ghost"), userSelector(userId("ghost")));
+		const r = fx.uow.transact((ctx) =>
+			getBalance(ctx, { issuer: TEST_ISSUER, subject: "ghost" }),
+		);
 
 		expect(r).toMatchObject({
 			ok: false,
-			error: { type: "rejected", code: "WALLET_NOT_FOUND" },
+			error: { type: "unresolved", code: "IDENTITY_NOT_BOUND" },
 		});
+	});
+
+	it("reports a bound Principal without a default Account", () => {
+		const fx = createInMemoryFixture();
+		const bare = fx.seedPrincipal();
+		fx.bind(bare, "bare");
+
+		const r = fx.uow.transact((ctx) =>
+			getBalance(ctx, { issuer: TEST_ISSUER, subject: "bare" }),
+		);
+
+		expect(r).toMatchObject({
+			ok: false,
+			error: { code: "DEFAULT_ACCOUNT_NOT_DESIGNATED" },
+		});
+	});
+
+	it("writes nothing", () => {
+		const fx = createInMemoryFixture();
+		const alice = fx.seedIdentity("alice");
+		const snapshot = JSON.stringify([...fx.state.accounts]);
+
+		fx.uow.transact((ctx) => getBalance(ctx, alice.identity));
+
+		expect(JSON.stringify([...fx.state.accounts])).toBe(snapshot);
+		expect(fx.state.transactionRows).toHaveLength(0);
 	});
 });

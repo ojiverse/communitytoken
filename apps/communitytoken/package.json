@@ -10,7 +10,6 @@
 	},
 	"dependencies": {
 		"@communitytoken/application": "workspace:*",
-		"@communitytoken/economic-kernel": "workspace:*",
 		"jose": "6.2.12"
 	},
 	"devDependencies": {

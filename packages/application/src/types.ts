@@ -1,74 +1,57 @@
 /**
- * Domain types of the application layer for the Phase 2 CommunityToken
- * service (see docs/specification/README.md). These types are provider- and runtime-independent:
- * they name internal identities and application records, never external
- * provider identifiers or platform types (the transaction-consistency and authentication/delegation specifications).
+ * Domain types of the application layer (see docs/specification). These
+ * types are provider- and runtime-independent: they name internal
+ * identifiers and application records, never external provider identifiers
+ * or platform types. The primitive monetary vocabulary is Principal,
+ * Account, and Transaction with ISSUE and TRANSFER as the only kinds.
  */
 
 import type {
-	OperationKind,
 	RejectionCode,
+	TransactionKind,
 } from "@communitytoken/economic-kernel";
 
-export type { OperationKind, RejectionCode };
+export type { RejectionCode, TransactionKind };
 
 declare const brand: unique symbol;
 
 /**
  * An opaque identifier: a `T` whose origin is fixed to `B` at compile time.
- * Branding keeps stable internal identifiers (User, Wallet, records)
- * non-substitutable with each other and with external identifiers such as an
- * OIDC `sub` or a Discord snowflake (the identity and authentication/delegation specifications).
+ * Branding keeps internal identifiers non-substitutable with each other and
+ * with external identifiers such as an OIDC `sub` (the identity and
+ * persistence specifications).
  */
 export type Brand<T, B> = T & { readonly [brand]: B };
 
 /**
- * Opaque, stable internal identifier of a User (the identity specification). Never derived
- * from an external provider; external identities resolve to it through an
+ * Opaque, stable internal identifier of a Principal. Never derived from an
+ * external provider; an ExternalIdentity resolves to it through an
  * IdentityBinding at the trusted boundary.
  */
-export type UserId = Brand<string, "UserId">;
+export type PrincipalId = Brand<string, "PrincipalId">;
 
-/**
- * Brands/rehydrates a persisted internal User identifier as `UserId`.
- * Creation/allocation belongs to the persistence boundary (the persistence specification).
- */
-export function userId(raw: string): UserId {
-	return raw as UserId;
-}
+/** Opaque identifier of an Account. */
+export type AccountId = Brand<string, "AccountId">;
 
-/**
- * Opaque identifier of a Wallet. The single treasury wallet's id is the
- * kernel's `TREASURY_WALLET_ID`.
- */
-export type WalletId = Brand<string, "WalletId">;
-
-/** Brands `raw` as a WalletId. Persistence owns id allocation. */
-export function walletId(raw: string): WalletId {
-	return raw as WalletId;
-}
-
-/** Opaque identifier of a persisted EconomicOperation. */
-export type OperationId = Brand<string, "OperationId">;
-
-/** Brands `raw` as an OperationId. Persistence owns id allocation. */
-export function operationId(raw: string): OperationId {
-	return raw as OperationId;
-}
-
-/** Opaque identifier of a persisted LedgerTransaction. */
-export type LedgerId = Brand<string, "LedgerId">;
-
-/** Brands `raw` as a LedgerId. Persistence owns id allocation. */
-export function ledgerId(raw: string): LedgerId {
-	return raw as LedgerId;
-}
+/** Opaque identifier of a committed Transaction. */
+export type TransactionId = Brand<string, "TransactionId">;
 
 /** Opaque identifier of a persisted RegistrationIntent. */
 export type RegistrationIntentId = Brand<string, "RegistrationIntentId">;
 
-/** Brands `raw` as a RegistrationIntentId. Persistence owns id allocation. */
-export function registrationIntentId(raw: string): RegistrationIntentId {
+function principalId(raw: string): PrincipalId {
+	return raw as PrincipalId;
+}
+
+function accountId(raw: string): AccountId {
+	return raw as AccountId;
+}
+
+function transactionId(raw: string): TransactionId {
+	return raw as TransactionId;
+}
+
+function registrationIntentId(raw: string): RegistrationIntentId {
 	return raw as RegistrationIntentId;
 }
 
@@ -76,258 +59,130 @@ export function registrationIntentId(raw: string): RegistrationIntentId {
  * Rehydration of persisted identifiers: brands raw storage strings as
  * opaque ids. This is the visible unsafe boundary — only persistence
  * adapters and test support may turn an arbitrary string into an internal
- * id; the application API consumes already-branded values (the persistence specification).
+ * id; the application API consumes already-branded values. Identifier
+ * allocation belongs to the persistence boundary.
  */
 export const rehydrate = {
-	userId,
-	walletId,
-	operationId,
-	ledgerId,
+	principalId,
+	accountId,
+	transactionId,
 	registrationIntentId,
 } as const;
 
-/** The `actor_kind` values persisted on `economic_operations` (the actor/visibility specification). */
-export type ActorKind = "user" | "service" | "system";
-
 /**
- * The administrative service principal of the actor/visibility specification: the only actor
- * permitted to run `TOKEN_ISSUANCE` and `DISTRIBUTION`. Bound at the
- * `/api/v1/admin/*` boundary; other service principals (e.g. `discord-adapter`)
- * are not administrative.
+ * An exact external identity: the ordered `(issuer, subject)` pair. The
+ * full pair is the identity key — subject alone is insufficient (identity
+ * specification).
  */
-export const ADMIN_API_PRINCIPAL = "admin-api";
-
-/** A resolved internal User acting on their own wallet (the actor/visibility specification). */
-export type UserActor = {
-	readonly kind: "user";
-	readonly userId: UserId;
-};
-
-/** A trusted service principal identified by its credential id (the actor/visibility specification). */
-export type ServiceActor = {
-	readonly kind: "service";
-	readonly principalId: string;
+export type ExternalIdentity = {
+	readonly issuer: string;
+	readonly subject: string;
 };
 
 /**
- * The administrative actor: the `admin-api` service principal. Administrative
- * use cases take this type so that calling them with any other principal is
- * inexpressible in typed code (the authentication/delegation and actor/visibility specifications).
+ * The authenticated administrative technical caller. It is a technical
+ * authority, not a domain Principal: the application maps it to the one
+ * stable administrative issuer Principal (authentication/delegation
+ * specification).
  */
-export type AdminActor = ServiceActor & {
-	readonly principalId: typeof ADMIN_API_PRINCIPAL;
-};
+export const ADMIN_API_CALLER = "admin-api";
 
-/** A scheduled/policy initiator; carries no identifier (the actor/visibility specification). */
-export type SystemActor = {
-	readonly kind: "system";
-};
+/** The type of the administrative technical caller. */
+export type AdministrativeCaller = typeof ADMIN_API_CALLER;
 
-/**
- * Who initiated a use case: application/audit context attached to the
- * persisted EconomicOperation. The actor is never an input to the economic
- * evaluator and is distinct from the funding wallet (the actor/visibility specification). The
- * union encodes the storage CHECK at compile time: `user` and `service`
- * actors carry an identifier, `system` carries none.
- */
-export type Actor = UserActor | ServiceActor | SystemActor;
-
-/**
- * The the actor/visibility specification actor columns as persisted on `economic_operations` and joined
- * into history rows: kind and id form one union, so a `system` actor cannot
- * carry an id and `user`/`service` actors cannot lack one.
- */
-export type PersistedActor =
-	| { readonly actorKind: "user"; readonly actorId: UserId }
-	| { readonly actorKind: "service"; readonly actorId: string }
-	| { readonly actorKind: "system"; readonly actorId: null };
-
-/**
- * Projects an `Actor` onto the actor/visibility specification persisted columns. Repositories call
- * this when storing an `EconomicOperation`; there is no reverse — stored
- * columns never rehydrate into an `Actor`.
- */
-export function persistedActor(actor: Actor): PersistedActor {
-	switch (actor.kind) {
-		case "user":
-			return { actorKind: "user", actorId: actor.userId };
-		case "service":
-			return { actorKind: "service", actorId: actor.principalId };
-		case "system":
-			return { actorKind: "system", actorId: null };
-	}
-}
-
-/**
- * Re-derives the persisted actor columns of a stored record — for example
- * when joining an `EconomicOperation` into a history row — without losing
- * the kind/id correlation the union encodes.
- */
-export function persistedActorOf(record: PersistedActor): PersistedActor {
-	switch (record.actorKind) {
-		case "user":
-			return { actorKind: "user", actorId: record.actorId };
-		case "service":
-			return { actorKind: "service", actorId: record.actorId };
-		case "system":
-			return { actorKind: "system", actorId: record.actorId };
-	}
-}
-
-export type WalletKind = "system" | "user";
-
-/**
- * Selects the deployment's single system wallet. Treasury reads are
- * administrative: use cases pair this selector with `AdminActor` so a
- * non-admin principal cannot express the call (the authentication/delegation and actor/visibility specifications).
- */
-export type TreasuryWalletSelector = { readonly type: "treasury" };
-
-/**
- * Selects the wallet owned by a user. User reads are self-only: use cases
- * pair this selector with the matching `UserActor` (the actor/visibility specification).
- */
-export type UserWalletSelector = {
-	readonly type: "user";
-	readonly userId: UserId;
+/** A persisted Principal. Carries no kind or subtype. */
+export type PrincipalRecord = {
+	readonly id: PrincipalId;
+	readonly createdAt: number;
 };
 
 /**
- * Selects the wallet a read targets (the actor/visibility specification). The tagged union keeps
- * the treasury in its own namespace: an opaque user id can never alias it,
- * and each variant binds to the actor type allowed to read it.
+ * A persisted Account: a non-negative balance container owned by exactly
+ * one Principal. There is no Account kind or role.
  */
-export type WalletSelector = TreasuryWalletSelector | UserWalletSelector;
-
-/** Selects the deployment's single system wallet. */
-export const TREASURY_SELECTOR: TreasuryWalletSelector = { type: "treasury" };
-
-/** Selects the wallet owned by `id`. */
-export function userSelector(id: UserId): UserWalletSelector {
-	return { type: "user", userId: id };
-}
-
-type WalletBase = {
-	readonly id: WalletId;
+export type Account = {
+	readonly id: AccountId;
+	readonly ownerPrincipalId: PrincipalId;
 	readonly balance: number;
 	readonly createdAt: number;
 	readonly updatedAt: number;
 };
 
-/** The deployment's single system wallet; owned by no user. */
-export type SystemWallet = WalletBase & {
-	readonly kind: "system";
-	readonly ownerUserId: null;
-};
-
-/** A wallet owned by exactly one internal User. */
-export type UserWallet = WalletBase & {
-	readonly kind: "user";
-	readonly ownerUserId: UserId;
-};
-
-/**
- * A wallet as the application layer reads it. The discriminated union makes
- * the storage CHECK unrepresentable to violate: a system wallet has no owner,
- * a user wallet always has one.
- */
-export type Wallet = SystemWallet | UserWallet;
-
-/** A persisted EconomicOperation, including the actor/visibility specification actor columns. */
-export type OperationRecord = {
-	readonly id: OperationId;
-	readonly kind: OperationKind;
-	readonly metadata: string | null;
-	readonly createdAt: number;
-} & PersistedActor;
-
-/** A persisted LedgerTransaction. */
-export type LedgerRecord = {
-	readonly id: LedgerId;
-	readonly operationId: OperationId;
-	readonly fromWalletId: WalletId;
-	readonly toWalletId: WalletId;
+/** A committed ISSUE: issuer Principal present, source absent. */
+export type IssueTransactionRecord = {
+	readonly id: TransactionId;
+	readonly kind: "ISSUE";
+	readonly issuerPrincipalId: PrincipalId;
+	readonly sourceAccountId: null;
+	readonly destinationAccountId: AccountId;
 	readonly amount: number;
-	readonly createdAt: number;
+	readonly committedAt: number;
+};
+
+/** A committed TRANSFER: source present, no issuer or actor. */
+export type TransferTransactionRecord = {
+	readonly id: TransactionId;
+	readonly kind: "TRANSFER";
+	readonly issuerPrincipalId: null;
+	readonly sourceAccountId: AccountId;
+	readonly destinationAccountId: AccountId;
+	readonly amount: number;
+	readonly committedAt: number;
 };
 
 /**
- * The operation+ledger join row a repository returns for history queries,
- * before requester-relative shaping. Owner ids are included for both
- * movement sides so the use case can derive `counterparty` (the persistence specification).
+ * One immutable committed Transaction. The union encodes the structural
+ * rule at compile time: ISSUE carries an issuer and no source, TRANSFER a
+ * source and no issuer.
  */
-export type HistoryRow = {
-	readonly id: OperationId;
-	readonly kind: OperationKind;
-	readonly amount: number;
-	readonly fromWalletId: WalletId;
-	readonly fromOwnerUserId: UserId | null;
-	readonly toWalletId: WalletId;
-	readonly toOwnerUserId: UserId | null;
-	readonly metadata: string | null;
-	readonly createdAt: number;
-} & PersistedActor;
+export type TransactionRecord =
+	| IssueTransactionRecord
+	| TransferTransactionRecord;
 
 /**
- * Movement direction relative to the requesting wallet (the actor/visibility specification):
- * `"in"` when value arrives, `"out"` when it leaves, `"self"` for a
- * self-movement whose net balance delta is zero (a `P2P_TRANSFER` whose
- * source and destination are the same wallet). A `TOKEN_ISSUANCE` ledger
- * row also reads `from == to == treasury`, but issuance is genuinely
- * incoming value, so it reports `"in"`.
+ * Direction relative to the viewed Account (actor-and-visibility
+ * specification): `"in"` when value arrives (every ISSUE into the viewed
+ * Account), `"out"` when it leaves, `"self"` for a TRANSFER whose source
+ * and destination are both the viewed Account.
  */
 export type HistoryDirection = "in" | "out" | "self";
 
 /**
- * One entry of a user's or the treasury's operation history (the actor/visibility specification,
- * the persistence specification). `counterparty` is `"treasury"` for a system-side movement, otherwise
- * the internal User id owning the other wallet; for a self-transfer it is
- * the requesting user themself.
+ * One self-history entry. It exposes primitive Transaction facts plus the
+ * product projection, never an internal Principal or Account identifier.
+ * `counterparty` is `null` for ISSUE and for a TRANSFER whose other
+ * Principal has zero or several bindings under the caller's issuer.
  */
 export type HistoryEntry = {
-	readonly id: OperationId;
-	readonly kind: OperationKind;
+	readonly transactionId: TransactionId;
+	readonly kind: TransactionKind;
 	readonly amount: number;
-	readonly fromWalletId: WalletId;
-	readonly toWalletId: WalletId;
-	readonly metadata: string | null;
-	readonly createdAt: number;
+	readonly committedAt: number;
 	readonly direction: HistoryDirection;
-	readonly counterparty: "treasury" | UserId;
-} & PersistedActor;
+	readonly counterparty: ExternalIdentity | null;
+};
 
 /**
  * One page of a cursor-paginated result. `nextCursor` is an opaque
  * continuation value owned by the repository implementation; it is `null`
- * when the result is exhausted (the actor/visibility specification).
+ * when the result is exhausted.
  */
 export type Page<T> = {
 	readonly entries: readonly T[];
 	readonly nextCursor: string | null;
 };
 
-/**
- * A persisted User (the identity specification): the stable internal
- * identity an external `(issuer, subject)` pair binds to. Registration is
- * the only creation path.
- */
-export type UserRecord = {
-	readonly id: UserId;
-	readonly createdAt: number;
-};
-
-/** The `status` values persisted on `registration_intents` (the registration specification). */
+/** The `status` values persisted on registration intents (registration specification). */
 export type RegistrationIntentStatus = "active" | "consumed" | "superseded";
 
 /**
- * A persisted RegistrationIntent (the registration specification): a
- * one-shot registration transaction fixing one expected external identity,
- * the correlation `state`, the authentication `nonce`, and the
- * provider-independent proof-key secret (the production adapter stores it
- * in the `pkce_verifier` column). `expiresAt` is epoch milliseconds exactly
+ * A persisted RegistrationIntent (registration specification): a one-shot
+ * registration transaction fixing one expected external identity, the
+ * correlation `state`, the authentication `nonce`, and the
+ * provider-independent proof-key secret. `expiresAt` is exactly
  * `createdAt + 600_000`; `consumedAt` is set iff `status` is `"consumed"`.
- * Lifecycle and temporal validity are distinct: an intent may remain
- * status-`active` past `expiresAt`, but is then unusable.
+ * An intent may remain status-`active` past `expiresAt`, but is then
+ * unusable.
  */
 export type RegistrationIntent = {
 	readonly id: RegistrationIntentId;
@@ -343,16 +198,16 @@ export type RegistrationIntent = {
 };
 
 /**
- * A persisted IdempotencyRecord (the idempotency specification): the replay
+ * A persisted IdempotencyRecord (idempotency specification): the replay
  * record of a protected mutation that committed under the
- * `(servicePrincipal, idempotencyKey)` pair. `storedResult` is the opaque
+ * `(technicalCaller, idempotencyKey)` pair. `storedResult` is the opaque
  * serialized outcome the trusted boundary replays on a matching request;
  * `fingerprintVersion` + `requestFingerprint` identify the request the
- * record belongs to, so the same key under a different request is a
- * conflict rather than a replay.
+ * record belongs to. It is replay state only — never the authority for
+ * ISSUE provenance.
  */
 export type IdempotencyRecord = {
-	readonly servicePrincipal: string;
+	readonly technicalCaller: string;
 	readonly idempotencyKey: string;
 	readonly fingerprintVersion: string;
 	readonly requestFingerprint: string;
@@ -360,17 +215,13 @@ export type IdempotencyRecord = {
 	readonly createdAt: number;
 };
 
-/**
- * The actor is not permitted to run this use case — for example a non-user
- * actor on a wallet-owner operation, or a non-admin actor on an
- * administrative operation (the authentication/delegation and actor/visibility specifications).
- */
+/** The technical caller is not permitted to run this use case. */
 export type ForbiddenError = {
 	readonly type: "forbidden";
 	readonly detail: string;
 };
 
-/** The economic kernel rejected the operation; `code` is passed through verbatim. */
+/** The primitive evaluator rejected the transition; `code` is passed through verbatim. */
 export type RejectedError = {
 	readonly type: "rejected";
 	readonly code: RejectionCode;
@@ -379,10 +230,7 @@ export type RejectedError = {
 
 /**
  * A caller-supplied value violated the use case's input contract — for
- * example a history page `limit` outside `1..100` (`INVALID_LIMIT`).
- * Distinct from a kernel `rejected`: the evaluator never ran. `code` is
- * machine-readable so callers can branch on the reason without parsing
- * `detail`.
+ * example a history page `limit` outside `1..100`. The evaluator never ran.
  */
 export type InvalidInputError = {
 	readonly type: "invalid-input";
@@ -390,8 +238,28 @@ export type InvalidInputError = {
 	readonly detail: string;
 };
 
+/**
+ * An ExternalIdentity could not be resolved to a Principal's default
+ * Account: the identity is unbound, or its Principal has no default
+ * Account designation. The `RECIPIENT_` codes name the transfer
+ * destination side.
+ */
+export type UnresolvedError = {
+	readonly type: "unresolved";
+	readonly code:
+		| "IDENTITY_NOT_BOUND"
+		| "DEFAULT_ACCOUNT_NOT_DESIGNATED"
+		| "RECIPIENT_NOT_BOUND"
+		| "RECIPIENT_DEFAULT_ACCOUNT_NOT_DESIGNATED";
+	readonly detail: string;
+};
+
 /** The expected failures a caller is meant to handle. */
-export type UseCaseError = ForbiddenError | RejectedError | InvalidInputError;
+export type UseCaseError =
+	| ForbiddenError
+	| RejectedError
+	| InvalidInputError
+	| UnresolvedError;
 
 /**
  * Outcome of a use case: either the produced value or an expected failure.

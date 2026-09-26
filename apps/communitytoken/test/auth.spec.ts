@@ -1,15 +1,15 @@
-import { ADMIN_API_PRINCIPAL } from "@communitytoken/application";
+import { ADMIN_API_CALLER } from "@communitytoken/application";
 import { describe, expect, it } from "vitest";
 import {
 	authenticate,
-	DISCORD_ADAPTER_PRINCIPAL,
+	DISCORD_ADAPTER_CALLER,
 	type ServiceCredentials,
 } from "../src/auth";
 
 /**
  * PR-3 Worker authentication coverage (issue #4, the
  * authentication/delegation specification): the Bearer credential asserts
- * a service principal. A missing/empty configured token never matches,
+ * a technical caller. A missing/empty configured token never matches,
  * and a credential matching both configured secrets — including equal
  * configured secrets — is ambiguous and fails closed.
  */
@@ -38,22 +38,22 @@ describe("authenticate", () => {
 		).toBeNull();
 	});
 
-	it("accepts each configured credential and asserts its principal", async () => {
+	it("accepts each configured credential and asserts its technical caller", async () => {
 		expect(
 			await authenticate(
 				requestWith("Bearer test-discord-secret"),
 				CREDENTIALS,
 			),
-		).toBe(DISCORD_ADAPTER_PRINCIPAL);
+		).toBe(DISCORD_ADAPTER_CALLER);
 		expect(
 			await authenticate(requestWith("Bearer test-admin-secret"), CREDENTIALS),
-		).toBe(ADMIN_API_PRINCIPAL);
+		).toBe(ADMIN_API_CALLER);
 	});
 
 	it("parses the Bearer scheme case-insensitively and keeps the token verbatim", async () => {
 		expect(
 			await authenticate(requestWith("bearer test-admin-secret"), CREDENTIALS),
-		).toBe(ADMIN_API_PRINCIPAL);
+		).toBe(ADMIN_API_CALLER);
 		// No trimming or case normalization of the credential bytes: inner
 		// whitespace and a different case are different credentials.
 		expect(
@@ -86,7 +86,7 @@ describe("authenticate", () => {
 			adminApiToken: "same-secret",
 			discordAdapterToken: "same-secret",
 		};
-		// Ambiguous match — no principal is asserted.
+		// Ambiguous match — no technical caller is asserted.
 		expect(
 			await authenticate(requestWith("Bearer same-secret"), equal),
 		).toBeNull();

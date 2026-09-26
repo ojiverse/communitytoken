@@ -7,6 +7,7 @@ import {
 	issueAuthorizationCode,
 	readAuthorizationParams,
 } from "./support/fake-oidc/client";
+import { seedIdentity } from "./support/seed";
 
 /**
  * PR-4 end-to-end coverage of OIDC registration (issue #4): the
@@ -104,12 +105,52 @@ async function bindingCount(issuer: string, subject: string): Promise<number> {
 	});
 }
 
-async function operationRowCount(): Promise<number> {
+async function transactionRowCount(): Promise<number> {
 	return runInDurableObject(communityStub(), async (_i, storage) => {
 		const row = storage.storage.sql
-			.exec("SELECT COUNT(*) AS n FROM economic_operations")
+			.exec("SELECT COUNT(*) AS n FROM transactions")
 			.one();
 		return Number(row["n"]);
+	});
+}
+
+/**
+ * The registration result for one bound identity: its Principal, the
+ * number of Accounts it owns, and its default designation.
+ */
+async function registrationState(
+	issuer: string,
+	subject: string,
+): Promise<{
+	readonly accounts: readonly { id: string; balance: number }[];
+	readonly defaultAccountId: string | null;
+}> {
+	return runInDurableObject(communityStub(), async (_i, storage) => {
+		const sql = storage.storage.sql;
+		const binding = sql
+			.exec(
+				"SELECT principal_id FROM identity_bindings WHERE issuer = ? AND subject = ?",
+				issuer,
+				subject,
+			)
+			.one();
+		const principal = String(binding["principal_id"]);
+		const accounts = sql
+			.exec(
+				"SELECT id, balance FROM accounts WHERE owner_principal_id = ?",
+				principal,
+			)
+			.toArray() as unknown as { id: string; balance: number }[];
+		const designations = sql
+			.exec(
+				"SELECT account_id FROM default_accounts WHERE principal_id = ?",
+				principal,
+			)
+			.toArray() as unknown as { account_id: string }[];
+		return {
+			accounts,
+			defaultAccountId: designations[0]?.account_id ?? null,
+		};
 	});
 }
 
@@ -279,9 +320,7 @@ describe("POST /api/v1/registration-intents", () => {
 	it("returns already_registered without mutating or recording a replay", async () => {
 		const subject = `sub-${crypto.randomUUID()}`;
 		const stub = communityStub();
-		expect(await stub.createBoundUser(`u-${subject}`, ISSUER, subject)).toEqual(
-			{ ok: true },
-		);
+		await seedIdentity(stub, { issuer: ISSUER, subject });
 		const key = `ik-${crypto.randomUUID()}`;
 		const response = await postIntents({
 			token: DISCORD_TOKEN(),
@@ -302,7 +341,7 @@ describe("POST /api/v1/registration-intents", () => {
 		});
 	});
 
-	it("401s unauthenticated, 403s the wrong principal", async () => {
+	it("401s unauthenticated, 403s the wrong technical caller", async () => {
 		expect(
 			(
 				await postIntents({
@@ -385,8 +424,8 @@ describe("POST /api/v1/registration-intents", () => {
 });
 
 describe("GET /auth/oidc/callback", () => {
-	it("completes registration: success page, bound user, consumed intent", async () => {
-		const operationsBefore = await operationRowCount();
+	it("completes registration: success page, Principal + Account + default designation + binding, consumed intent", async () => {
+		const transactionsBefore = await transactionRowCount();
 		const intent = await createIntent();
 		const response = await callback(
 			await successCallbackUrl(intent.state, {
@@ -399,8 +438,12 @@ describe("GET /auth/oidc/callback", () => {
 			status: "consumed",
 		});
 		expect(await bindingCount(ISSUER, intent.subject)).toBe(1);
-		// Registration creates no EconomicOperation and no actor.
-		expect(await operationRowCount()).toBe(operationsBefore);
+		const registered = await registrationState(ISSUER, intent.subject);
+		expect(registered.accounts).toHaveLength(1);
+		expect(registered.accounts[0]?.balance).toBe(0);
+		expect(registered.defaultAccountId).toBe(registered.accounts[0]?.id);
+		// Registration creates no monetary value and no Transaction.
+		expect(await transactionRowCount()).toBe(transactionsBefore);
 
 		// The completed registration is usable through the trusted API.
 		const balance = await SELF.fetch(`${ORIGIN}/api/v1/balance`, {
@@ -415,12 +458,12 @@ describe("GET /auth/oidc/callback", () => {
 		expect(await balance.json()).toEqual({ balance: 0 });
 	});
 
-	it("resolves an already-bound identity without duplicating user/wallet/binding", async () => {
+	it("resolves an already-bound identity without duplicating Principal/Account/designation/binding", async () => {
 		const intent = await createIntent();
-		const stub = communityStub();
-		expect(
-			await stub.createBoundUser(`u-${intent.subject}`, ISSUER, intent.subject),
-		).toEqual({ ok: true });
+		const seeded = await seedIdentity(communityStub(), {
+			issuer: ISSUER,
+			subject: intent.subject,
+		});
 		const response = await callback(
 			await successCallbackUrl(intent.state, {
 				challenge: intent.challenge,
@@ -432,15 +475,9 @@ describe("GET /auth/oidc/callback", () => {
 			status: "consumed",
 		});
 		expect(await bindingCount(ISSUER, intent.subject)).toBe(1);
-		await runInDurableObject(stub, async (_i, storage) => {
-			const row = storage.storage.sql
-				.exec(
-					"SELECT COUNT(*) AS n FROM wallets WHERE owner_user_id = ?",
-					`u-${intent.subject}`,
-				)
-				.one();
-			expect(row["n"]).toBe(1);
-		});
+		const registered = await registrationState(ISSUER, intent.subject);
+		expect(registered.accounts).toEqual([{ id: seeded.accountId, balance: 0 }]);
+		expect(registered.defaultAccountId).toBe(seeded.accountId);
 	});
 
 	it("rejects a wrong-subject proof without consuming the intent", async () => {

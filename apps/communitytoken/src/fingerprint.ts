@@ -18,7 +18,7 @@
  *   + RFC8785_JCS(parsed_json_body)
  *
  * request_fingerprint = lowercase hex of SHA-256 over UTF-8(preimage).
- * The idempotency key, bearer bytes, service principal, transport-only
+ * The idempotency key, bearer bytes, technical caller, transport-only
  * headers, and query parameters are excluded by construction — they never
  * enter the preimage.
  */

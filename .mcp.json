@@ -1,0 +1,14 @@
+{
+	"mcpServers": {
+		"1password": {
+			"type": "stdio",
+			"command": "1password-mcp",
+			"args": [],
+			"env": {}
+		},
+		"cloudflare": {
+			"type": "http",
+			"url": "https://mcp.cloudflare.com/mcp"
+		}
+	}
+}

@@ -12,6 +12,16 @@ import { transferBetweenIdentities } from "../src/use-cases/transfer-between-ide
 import { createInMemoryFixture } from "./in-memory";
 
 const SRC = join(import.meta.dirname, "..", "src");
+/** The production Worker / Durable Object source consuming this package. */
+const APP_SRC = join(
+	import.meta.dirname,
+	"..",
+	"..",
+	"..",
+	"apps",
+	"communitytoken",
+	"src",
+);
 
 function sourceFiles(dir: string): readonly string[] {
 	return readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
@@ -24,36 +34,54 @@ function sourceFiles(dir: string): readonly string[] {
 }
 
 function relative(path: string): string {
-	return path.slice(SRC.length + 1);
+	return path.startsWith(APP_SRC)
+		? `app:${path.slice(APP_SRC.length + 1)}`
+		: path.slice(SRC.length + 1);
+}
+
+/** Every production source file of this package and of the app. */
+function productionSources(): readonly string[] {
+	return [...sourceFiles(SRC), ...sourceFiles(APP_SRC)];
+}
+
+function filesMatching(pattern: RegExp): readonly string[] {
+	return productionSources()
+		.filter((file) => pattern.test(readFileSync(file, "utf8")))
+		.map(relative)
+		.sort();
 }
 
 /**
  * Phase 2 exposes ISSUE only through the authenticated administrative
  * issuance path (owner decision 2/5 on #25): the primitive kernel stays
  * role-agnostic, so the single-construction-path guarantee is locked at
- * the application layer — statically over the source, and behaviorally
- * over every other use case.
+ * the application layer — statically over this package's and the
+ * production app's source, and behaviorally over every other use case.
  */
 describe("single ISSUE construction path", () => {
-	it("only the administrative issuance use case invokes the primitive ISSUE operation", () => {
-		const callers = sourceFiles(SRC)
-			.filter((file) => /\bexecuteIssue\s*\(/.test(readFileSync(file, "utf8")))
-			.map(relative)
-			.sort();
-
+	it("only the administrative issuance use case invokes the primitive ISSUE operation, in the package and the app", () => {
 		// `ledger.ts` defines it; `issue-to-identity.ts` is the only caller.
-		expect(callers).toEqual([
+		expect(filesMatching(/\bexecuteIssue\s*\(/)).toEqual([
 			"use-cases/issue-to-identity.ts",
 			"use-cases/ledger.ts",
 		]);
 	});
 
-	it("only the primitive ledger module evaluates ISSUE through the kernel", () => {
-		const evaluators = sourceFiles(SRC)
-			.filter((file) => /\bevaluateIssue\b/.test(readFileSync(file, "utf8")))
-			.map(relative);
+	it("only the primitive ledger module evaluates ISSUE or appends Transactions", () => {
+		expect(filesMatching(/\bevaluateIssue\b/)).toEqual(["use-cases/ledger.ts"]);
+		expect(filesMatching(/\btransactions\.insert\s*\(/)).toEqual([
+			"use-cases/ledger.ts",
+		]);
+	});
 
-		expect(evaluators).toEqual(["use-cases/ledger.ts"]);
+	it("the app reaches ISSUE only through the administrative issuance use case", () => {
+		expect(filesMatching(/\bissueToIdentity\s*\(/)).toEqual([
+			"app:community-state.ts",
+			"use-cases/issue-to-identity.ts",
+		]);
+		expect(filesMatching(/INSERT INTO transactions/i)).toEqual([
+			"app:repositories.ts",
+		]);
 	});
 
 	it("registration, balance, history, and TRANSFER never record an ISSUE", () => {

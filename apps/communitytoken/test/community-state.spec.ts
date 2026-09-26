@@ -11,7 +11,7 @@ import {
 } from "@communitytoken/application";
 import { describe, expect, it } from "vitest";
 import { DISCORD_ADAPTER_CALLER } from "../src/auth";
-import type { CommunityState, IdempotencyParams } from "../src/community-state";
+import { CommunityState, type IdempotencyParams } from "../src/community-state";
 import type { CommunityStateApi } from "../src/http";
 import { createStorageUnitOfWork } from "../src/unit-of-work";
 import {
@@ -683,6 +683,22 @@ describe("production UnitOfWork", () => {
 });
 
 describe("route-facing methods", () => {
+	it("exposes exactly the route-facing RPC surface — no generic ledger or test-support method", () => {
+		const methods = Object.getOwnPropertyNames(CommunityState.prototype)
+			.filter((name) => name !== "constructor")
+			.sort();
+
+		expect(methods).toEqual([
+			"adminIssue",
+			"apiCreateRegistrationIntent",
+			"completeOidcRegistration",
+			"getOidcRegistrationIntent",
+			"internalBalance",
+			"internalHistory",
+			"internalTransfer",
+		]);
+	});
+
 	it("backstops the route-group caller inside the object", async () => {
 		const s = freshStub();
 		await seedIdentity(s, identity("alice"));

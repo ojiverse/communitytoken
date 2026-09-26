@@ -1,11 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { IdempotencyRecord } from "../src/types";
-import { userId } from "../src/types";
+import { rehydrate } from "../src/types";
 import {
 	executeIdempotent,
 	type IdempotencyKeyInfo,
 } from "../src/use-cases/execute-idempotent";
-import { TREASURY_ID } from "../src/use-cases/shared";
 import {
 	createInMemoryFixture,
 	createInMemoryState,
@@ -14,7 +13,7 @@ import {
 } from "./in-memory";
 
 const KEY_INFO: IdempotencyKeyInfo = {
-	servicePrincipal: "discord-adapter",
+	technicalCaller: "discord-adapter",
 	idempotencyKey: "key-1",
 	fingerprintVersion: "v1",
 	requestFingerprint: "abc123",
@@ -24,7 +23,7 @@ function storedRecord(
 	overrides?: Partial<IdempotencyRecord>,
 ): IdempotencyRecord {
 	return {
-		servicePrincipal: KEY_INFO.servicePrincipal,
+		technicalCaller: KEY_INFO.technicalCaller,
 		idempotencyKey: KEY_INFO.idempotencyKey,
 		fingerprintVersion: KEY_INFO.fingerprintVersion,
 		requestFingerprint: KEY_INFO.requestFingerprint,
@@ -42,20 +41,20 @@ describe("executeIdempotent", () => {
 			executeIdempotent(ctx, KEY_INFO, () => ({
 				record: true,
 				result: "fresh-result",
-				storedResult: '{"status":200,"body":{"operation_id":"op-1"}}',
+				storedResult: '{"status":200,"body":{"transaction_id":"tx-1"}}',
 			})),
 		);
 
 		expect(outcome).toEqual({ type: "executed", result: "fresh-result" });
 		const stored = fx.state.idempotencyRecords.get(
-			JSON.stringify([KEY_INFO.servicePrincipal, KEY_INFO.idempotencyKey]),
+			JSON.stringify([KEY_INFO.technicalCaller, KEY_INFO.idempotencyKey]),
 		);
 		expect(stored).toEqual({
-			servicePrincipal: KEY_INFO.servicePrincipal,
+			technicalCaller: KEY_INFO.technicalCaller,
 			idempotencyKey: KEY_INFO.idempotencyKey,
 			fingerprintVersion: "v1",
 			requestFingerprint: "abc123",
-			storedResult: '{"status":200,"body":{"operation_id":"op-1"}}',
+			storedResult: '{"status":200,"body":{"transaction_id":"tx-1"}}',
 			createdAt: 4242,
 		});
 	});
@@ -93,7 +92,7 @@ describe("executeIdempotent", () => {
 		});
 	});
 
-	it("conflicts when the same principal+key carries a different fingerprint", () => {
+	it("conflicts when the same caller+key carries a different fingerprint", () => {
 		const fx = createInMemoryFixture();
 		fx.uow.transact((ctx) => ctx.idempotencyRecords.insert(storedRecord()));
 
@@ -129,14 +128,14 @@ describe("executeIdempotent", () => {
 		expect(outcome).toEqual({ type: "conflict" });
 	});
 
-	it("scopes records to the service principal: a different principal executes fresh", () => {
+	it("scopes records to the technical caller: a different caller executes fresh", () => {
 		const fx = createInMemoryFixture();
 		fx.uow.transact((ctx) => ctx.idempotencyRecords.insert(storedRecord()));
 
 		const outcome = fx.uow.transact((ctx) =>
 			executeIdempotent(
 				ctx,
-				{ ...KEY_INFO, servicePrincipal: "admin-api" },
+				{ ...KEY_INFO, technicalCaller: "admin-api" },
 				() => ({ record: false, result: "fresh" }),
 			),
 		);
@@ -163,7 +162,7 @@ describe("executeIdempotent", () => {
 
 		expect(() =>
 			fx.uow.transact((ctx) => {
-				ctx.wallets.setBalance(TREASURY_ID, 999, ctx.nowMs);
+				ctx.principals.insert({ createdAt: ctx.nowMs });
 				const outcome = executeIdempotent(ctx, KEY_INFO, () => ({
 					record: true,
 					result: "ok",
@@ -175,6 +174,7 @@ describe("executeIdempotent", () => {
 		).toThrow(/abort/);
 
 		expect(fx.state.idempotencyRecords.size).toBe(0);
+		expect(fx.state.principals.size).toBe(1);
 	});
 
 	it("a throw inside execute persists no record", () => {
@@ -214,22 +214,22 @@ describe("executeIdempotent", () => {
 });
 
 describe("in-memory identity binding repository", () => {
-	it("resolves an exact (issuer, subject) pair to its user and misses otherwise", () => {
+	it("resolves an exact (issuer, subject) pair to its Principal and misses otherwise", () => {
 		const state = createInMemoryState();
 		state.identityBindings.set(
 			JSON.stringify(["issuer-a", "subject-1"]),
-			userId("user-1"),
+			rehydrate.principalId("principal-1"),
 		);
 		const uow = createInMemoryUnitOfWork(state, fixedClock(1));
 
 		const found = uow.transact((ctx) =>
-			ctx.identityBindings.findUserIdByExternal("issuer-a", "subject-1"),
+			ctx.identityBindings.findPrincipalIdByExternal("issuer-a", "subject-1"),
 		);
 		const missed = uow.transact((ctx) =>
-			ctx.identityBindings.findUserIdByExternal("issuer-a", "subject-2"),
+			ctx.identityBindings.findPrincipalIdByExternal("issuer-a", "subject-2"),
 		);
 
-		expect(found).toBe(userId("user-1"));
+		expect(found).toBe(rehydrate.principalId("principal-1"));
 		expect(missed).toBeUndefined();
 	});
 });

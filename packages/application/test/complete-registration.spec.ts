@@ -4,12 +4,13 @@ import { completeRegistration } from "../src/use-cases/complete-registration";
 import { createInMemoryFixture, fixedClock, stepClock } from "./in-memory";
 
 /**
- * `completeRegistration` coverage (issue #4 PR-4, the registration
- * specification): the completion section re-checks intent validity and
- * exact identity equality at the same serialized boundary that creates or
- * resolves the identity binding; a proof mismatch consumes nothing; and a
- * valid completion against an already-bound identity resolves the existing
- * User while still consuming the intent.
+ * `completeRegistration` coverage (registration specification): the
+ * completion section re-checks intent validity and exact identity equality
+ * at the same serialized boundary that creates or resolves the binding; a
+ * first registration atomically creates Principal + zero-balance Account +
+ * default designation + IdentityBinding + consumed intent; a proof
+ * mismatch consumes nothing; and an already-bound identity resolves the
+ * existing Principal without duplicating anything.
  */
 
 const ISSUER = "https://issuer.test";
@@ -51,8 +52,16 @@ function complete(fx: Fixture, verified?: { issuer: string; subject: string }) {
 	);
 }
 
+/**
+ * Principals other than the pre-seeded administrative issuer — i.e. the
+ * ones registration created.
+ */
+function registeredPrincipals(fx: Fixture): number {
+	return fx.state.principals.size - 1;
+}
+
 describe("completeRegistration", () => {
-	it("completes a fresh registration: User + zero wallet + binding + consumed intent", () => {
+	it("completes a fresh registration: Principal + zero Account + default designation + binding + consumed intent", () => {
 		const fx = createInMemoryFixture({ clock: fixedClock(1_000) });
 		const id = seedIntent(fx);
 
@@ -61,62 +70,80 @@ describe("completeRegistration", () => {
 		expect(outcome.type).toBe("completed");
 		if (outcome.type !== "completed") return;
 		expect(outcome.created).toBe(true);
-		// One stable User with one zero-balance user wallet and one binding.
-		expect(fx.state.users.size).toBe(1);
-		const user = fx.state.users.get(outcome.userId);
-		expect(user).toBeDefined();
-		const wallet = [...fx.state.wallets.values()].find(
-			(w) => w.kind === "user",
-		);
-		expect(wallet).toMatchObject({
-			kind: "user",
-			ownerUserId: outcome.userId,
+		expect(registeredPrincipals(fx)).toBe(1);
+		expect(fx.state.principals.get(outcome.principalId)).toBeDefined();
+		const accounts = [...fx.state.accounts.values()];
+		expect(accounts).toHaveLength(1);
+		expect(accounts[0]).toMatchObject({
+			ownerPrincipalId: outcome.principalId,
 			balance: 0,
 		});
+		expect(fx.state.defaultAccounts.get(outcome.principalId)).toBe(
+			accounts[0]?.id,
+		);
+		expect(fx.state.defaultAccounts.size).toBe(1);
 		expect(
 			fx.state.identityBindings.get(JSON.stringify([ISSUER, SUBJECT])),
-		).toBe(outcome.userId);
+		).toBe(outcome.principalId);
 		expect(intentOf(fx, id)).toMatchObject({
 			status: "consumed",
 			consumedAt: 1_000,
 		});
-		// Registration creates no economic movement.
-		expect(fx.state.operationRows).toHaveLength(0);
-		expect(fx.state.ledgerRows).toHaveLength(0);
+		// Registration creates no monetary value and no Transaction.
+		expect(fx.state.transactionRows).toHaveLength(0);
 	});
 
-	it("resolves the existing User without duplicating wallet/binding when already bound", () => {
+	it("resolves the existing Principal without duplicating Principal/Account/designation/binding when already bound", () => {
 		const fx = createInMemoryFixture({ clock: fixedClock(1_000) });
 		const id = seedIntent(fx);
 		// The identity becomes bound between intent creation and completion.
-		const existingUserId = fx.uow.transact((ctx) => {
-			const user = ctx.users.insert({ createdAt: ctx.nowMs });
-			ctx.identityBindings.insert({
-				issuer: ISSUER,
-				subject: SUBJECT,
-				userId: user.id,
-				createdAt: ctx.nowMs,
-			});
-			ctx.wallets.insertUserWallet({
-				ownerUserId: user.id,
-				createdAt: ctx.nowMs,
-			});
-			return user.id;
-		});
+		const existing = fx.seedIdentity(SUBJECT, ISSUER);
+		const counts = {
+			principals: fx.state.principals.size,
+			accounts: fx.state.accounts.size,
+			designations: fx.state.defaultAccounts.size,
+			bindings: fx.state.identityBindings.size,
+		};
 
 		const outcome = complete(fx);
 
 		expect(outcome).toEqual({
 			type: "completed",
-			userId: existingUserId,
+			principalId: existing.principalId,
 			created: false,
 		});
 		expect(intentOf(fx, id)?.status).toBe("consumed");
-		// No additional binding or wallet was created.
-		expect(fx.state.identityBindings.size).toBe(1);
-		expect(
-			[...fx.state.wallets.values()].filter((w) => w.kind === "user"),
-		).toHaveLength(1);
+		expect({
+			principals: fx.state.principals.size,
+			accounts: fx.state.accounts.size,
+			designations: fx.state.defaultAccounts.size,
+			bindings: fx.state.identityBindings.size,
+		}).toEqual(counts);
+	});
+
+	it("creates the default designation exactly once across repeated registrations of one identity", () => {
+		const fx = createInMemoryFixture();
+		seedIntent(fx, { state: "state-first" });
+		fx.uow.transact((ctx) =>
+			completeRegistration(ctx, {
+				state: "state-first",
+				verifiedIssuer: ISSUER,
+				verifiedSubject: SUBJECT,
+			}),
+		);
+		seedIntent(fx, { state: "state-second" });
+		const second = fx.uow.transact((ctx) =>
+			completeRegistration(ctx, {
+				state: "state-second",
+				verifiedIssuer: ISSUER,
+				verifiedSubject: SUBJECT,
+			}),
+		);
+
+		expect(second).toMatchObject({ type: "completed", created: false });
+		expect(registeredPrincipals(fx)).toBe(1);
+		expect(fx.state.accounts.size).toBe(1);
+		expect(fx.state.defaultAccounts.size).toBe(1);
 	});
 
 	it("rejects unknown state", () => {
@@ -138,7 +165,7 @@ describe("completeRegistration", () => {
 			type: "unavailable",
 			reason: "consumed",
 		});
-		expect(fx.state.users.size).toBe(0);
+		expect(registeredPrincipals(fx)).toBe(0);
 	});
 
 	it("rejects a superseded intent", () => {
@@ -153,7 +180,7 @@ describe("completeRegistration", () => {
 			reason: "superseded",
 		});
 		expect(intentOf(fx, id)?.status).toBe("superseded");
-		expect(fx.state.users.size).toBe(0);
+		expect(registeredPrincipals(fx)).toBe(0);
 	});
 
 	it("rejects an expired intent at exactly expiresAt", () => {
@@ -166,7 +193,7 @@ describe("completeRegistration", () => {
 			type: "unavailable",
 			reason: "expired",
 		});
-		expect(fx.state.users.size).toBe(0);
+		expect(registeredPrincipals(fx)).toBe(0);
 	});
 
 	it("rejects a mismatched verified pair without consuming the intent", () => {
@@ -183,7 +210,7 @@ describe("completeRegistration", () => {
 			});
 			expect(intentOf(fx, id)?.status).toBe("active");
 		}
-		expect(fx.state.users.size).toBe(0);
+		expect(registeredPrincipals(fx)).toBe(0);
 	});
 
 	it("commits nothing when a mid-section write fails", () => {
@@ -191,22 +218,21 @@ describe("completeRegistration", () => {
 			clock: fixedClock(1_000),
 			wrapScope: (scope) => ({
 				...scope,
-				wallets: {
-					...scope.wallets,
-					insertUserWallet() {
-						throw new Error("injected wallet failure");
+				defaultAccounts: {
+					...scope.defaultAccounts,
+					designate() {
+						throw new Error("injected designation failure");
 					},
 				},
 			}),
 		});
 		const id = seedIntent(fx);
 
-		expect(() => complete(fx)).toThrow("injected wallet failure");
-		expect(fx.state.users.size).toBe(0);
+		expect(() => complete(fx)).toThrow("injected designation failure");
+		expect(registeredPrincipals(fx)).toBe(0);
+		expect(fx.state.accounts.size).toBe(0);
+		expect(fx.state.defaultAccounts.size).toBe(0);
 		expect(fx.state.identityBindings.size).toBe(0);
-		expect(
-			[...fx.state.wallets.values()].filter((w) => w.kind === "user"),
-		).toHaveLength(0);
 		expect(intentOf(fx, id)?.status).toBe("active");
 	});
 });

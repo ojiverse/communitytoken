@@ -5,12 +5,10 @@ This package is the runtime-independent application orchestration layer.
 It translates authenticated product actions into identity resolution, authorization, default-Account
 selection, primitive ledger commands, projections, and application-level consistency work.
 
-## Migration status
+## Model
 
-Issue #25 reconciles this package to Principal, Account, Transaction, ISSUE, and TRANSFER.
-
-Until then, source may still expose superseded User, Wallet, treasury, actor, distribution, or
-four-operation types.
+Issue #25 reconciled this package to Principal, Account, Transaction, ISSUE, and TRANSFER. The
+superseded User, Wallet, treasury, actor, distribution, and four-operation types were removed.
 
 ## Responsibility boundary
 
@@ -44,7 +42,7 @@ performs TRANSFER.
 
 Balance and history project one default Account.
 
-There is no administrative distribution or treasury/reserve product role after #25.
+There is no administrative distribution or treasury/reserve product role.
 
 ## Authorization
 

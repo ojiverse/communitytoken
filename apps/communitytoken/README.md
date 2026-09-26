@@ -4,18 +4,16 @@ This application is the production HTTP and persistence realization of Community
 
 Architecture authority is GitHub issue #17. Phase 2 sequencing is owned by issue #19.
 
-## Migration state
+## Model
 
-The target model is Principal, Account, and Transaction with ISSUE and TRANSFER as the only primitive
-monetary kinds.
+The production model is Principal, Account, and Transaction with ISSUE and TRANSFER as the only
+primitive monetary kinds. ISSUE additionally records the issuing Principal.
 
-ISSUE additionally records the issuing Principal.
+Issue #25 removed the superseded User, Wallet, Treasury, EconomicOperation, LedgerTransaction,
+distribution, and four-operation implementation. Unshipped tables were replaced without migration
+machinery because no production economic state existed.
 
-Until #25 is merged, source and schema may still contain superseded User, Wallet, Treasury,
-EconomicOperation, LedgerTransaction, distribution, or four-operation terminology. Treat those names
-as migration residue.
-
-## Product surface after #25
+## Product surface
 
 Registration creates or resolves a Principal and ensures that a newly registered Principal has one
 application-designated default Account.
@@ -32,8 +30,8 @@ Administrative issuance resolves a target ExternalIdentity to a Principal and de
 performs one ISSUE. The Transaction records the stable Principal corresponding to the authenticated
 administrative authority as issuer.
 
-The superseded administrative distribution and treasury inspection routes are removed in #25. No
-reserve or treasury Account is part of the current product model.
+The superseded administrative distribution and treasury inspection routes were removed in #25 and
+answer 404 not_found. No reserve or treasury Account is part of the current product model.
 
 ## Authentication and authorization
 
@@ -73,9 +71,9 @@ mutations.
 A successful protected mutation and its replay record commit atomically. Successful monetary results
 include the committed Transaction identifier.
 
-## Persistence target
+## Persistence
 
-After #25, durable state represents Principal, Account, optional default-Account designation,
+Durable state represents Principal, Account, optional default-Account designation,
 IdentityBinding, Transaction, registration intent state, and idempotency/application records.
 
 A Transaction is either ISSUE or TRANSFER. An ISSUE stores issuer Principal, destination Account,

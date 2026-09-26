@@ -5,40 +5,85 @@ import {
 	SELF,
 } from "cloudflare:test";
 import {
-	ADMIN_API_PRINCIPAL,
-	type AdminActor,
+	ADMIN_API_CALLER,
 	rehydrate,
-	TREASURY_SELECTOR,
 	type TransactionContext,
-	type UserActor,
-	userSelector,
 } from "@communitytoken/application";
 import { describe, expect, it } from "vitest";
-import type { ServicePrincipal } from "../src/auth";
-import type { CommunityState } from "../src/index";
+import { DISCORD_ADAPTER_CALLER } from "../src/auth";
+import { CommunityState, type IdempotencyParams } from "../src/community-state";
+import type { CommunityStateApi } from "../src/http";
 import { createStorageUnitOfWork } from "../src/unit-of-work";
+import {
+	administrativeIssuer,
+	fund,
+	query,
+	seedIdentity,
+} from "./support/seed";
 
 /**
  * Integration coverage for the production CommunityState Durable Object:
- * serialization, atomic rollback, storage-level append-only, eviction
- * survival, safe-integer storage, the production UnitOfWork's context
- * lifetime / synchronous-section behavior (PR-2), and the PR-3 additions —
- * route-facing methods, `createBoundUser`, and the identity-binding /
- * idempotency tables.
+ * initialization of the administrative issuer Principal, the primitive
+ * ledger schema and its storage-level constraints (Transaction shape,
+ * monetary domains, default-Account designation, append-only history),
+ * serialization, rollback, eviction survival, the production UnitOfWork's
+ * context lifetime, and the route-facing methods' atomic idempotency.
  *
- * Each test uses a freshly-named DO id so tests are isolated without any
- * shared storage.
+ * Each test uses a freshly-named DO id so tests are isolated.
  */
 
-const ADMIN: AdminActor = { kind: "service", principalId: ADMIN_API_PRINCIPAL };
+const ISSUER = "https://discord.id.ojiver.se";
+const MAX = Number.MAX_SAFE_INTEGER;
 
 function freshStub(): DurableObjectStub<CommunityState> {
 	const id = env.COMMUNITY_STATE.idFromName(crypto.randomUUID());
 	return env.COMMUNITY_STATE.get(id) as DurableObjectStub<CommunityState>;
 }
 
-function userActor(rawUserId: string): UserActor {
-	return { kind: "user", userId: rehydrate.userId(rawUserId) };
+/**
+ * The route-facing RPC surface of a stub. The generic stub type recurses
+ * past the checker depth on `JsonValue`, so tests use the same declared
+ * interface the Worker uses.
+ */
+function rpc(stub: DurableObjectStub<CommunityState>): CommunityStateApi {
+	return stub as unknown as CommunityStateApi;
+}
+
+function identity(subject: string) {
+	return { issuer: ISSUER, subject };
+}
+
+function idempotency(key = crypto.randomUUID()): IdempotencyParams {
+	return { key, fingerprintVersion: "v1", requestFingerprint: `fp-${key}` };
+}
+
+/** Runs `statement` inside the object and reports whether it threw. */
+async function rejects(
+	stub: DurableObjectStub<CommunityState>,
+	statement: string,
+	...bindings: (string | number | null)[]
+): Promise<boolean> {
+	return runInDurableObject(stub, (_i, state) => {
+		try {
+			state.storage.transactionSync(() => {
+				state.storage.sql.exec(statement, ...bindings);
+			});
+			return false;
+		} catch {
+			return true;
+		}
+	});
+}
+
+async function count(
+	stub: DurableObjectStub<CommunityState>,
+	table: string,
+): Promise<number> {
+	const [row] = await query<{ n: number }>(
+		stub,
+		`SELECT COUNT(*) AS n FROM ${table}`,
+	);
+	return row?.n ?? 0;
 }
 
 describe("worker fetch surface", () => {
@@ -49,8 +94,6 @@ describe("worker fetch surface", () => {
 			});
 			expect(response.status).toBe(404);
 		}
-		// An owned route with no credential: route match succeeded and
-		// authentication rejects before the handler runs.
 		const owned = await SELF.fetch("https://token.ojiver.se/api/v1/balance", {
 			method: "POST",
 		});
@@ -58,507 +101,454 @@ describe("worker fetch surface", () => {
 	});
 });
 
-describe("production economic path", () => {
-	it("createUser seeds a user with a zero-balance wallet; ids stay verbatim", async () => {
+describe("initialization", () => {
+	it("ensures exactly one administrative issuer Principal with no Account, binding, or designation", async () => {
 		const s = freshStub();
-		await s.createUser("alice");
+		const issuer = await administrativeIssuer(s);
 
-		const balance = await s.getBalance(
-			userActor("alice"),
-			userSelector(rehydrate.userId("alice")),
-		);
-		expect(balance).toEqual({ ok: true, value: { balance: 0 } });
-	});
-
-	it("rejects a duplicate createUser and keeps exactly one wallet", async () => {
-		const s = freshStub();
-		expect(await s.createUser("alice")).toEqual({ ok: true });
-		// Expected duplicates surface as a result value, not an RPC rejection,
-		// so no remote unhandled rejection is produced in the test pool.
-		const duplicate = await s.createUser("alice");
-		expect(duplicate.ok).toBe(false);
-
-		const balance = await s.getBalance(
-			userActor("alice"),
-			userSelector(rehydrate.userId("alice")),
-		);
-		expect(balance).toEqual({ ok: true, value: { balance: 0 } });
-		await runInDurableObject(s, async (_i, state) => {
-			const row = state.storage.sql
-				.exec("SELECT COUNT(*) AS n FROM wallets WHERE owner_user_id = 'alice'")
-				.one();
-			expect(row["n"]).toBe(1);
-		});
-	});
-
-	it("composes kernel evaluation through the six use-case methods", async () => {
-		const s = freshStub();
-		await s.createUser("alice");
-		await s.createUser("bob");
-		const alice = userActor("alice");
-		const bob = rehydrate.userId("bob");
-
-		expect(await s.issueToken(ADMIN, { amount: 100 })).toEqual({
-			ok: true,
-			value: { operationId: expect.any(String) },
-		});
+		expect(await count(s, "principals")).toBe(1);
+		expect(await count(s, "administrative_issuer")).toBe(1);
+		expect(await count(s, "accounts")).toBe(0);
+		expect(await count(s, "identity_bindings")).toBe(0);
+		expect(await count(s, "default_accounts")).toBe(0);
+		expect(await count(s, "transactions")).toBe(0);
 		expect(
-			await s.distributeToken(ADMIN, { toUserId: bob, amount: 40 }),
-		).toEqual({ ok: true, value: { operationId: expect.any(String) } });
-
-		const payment = await s.payTreasury(alice, { amount: 0 });
-		expect(payment.ok).toBe(false);
-		if (!payment.ok) {
-			expect(payment.error).toMatchObject({
-				type: "rejected",
-				code: "INVALID_AMOUNT",
-			});
-		}
+			await query(s, "SELECT id FROM principals WHERE id = ?", issuer),
+		).toHaveLength(1);
 	});
 
-	it("records newest-first paginated history through the production join", async () => {
+	it("keeps the same administrative issuer Principal across eviction", async () => {
 		const s = freshStub();
-		await s.createUser("alice");
-		await s.createUser("bob");
-		const alice = userActor("alice");
-		const aliceId = rehydrate.userId("alice");
-		const bobId = rehydrate.userId("bob");
+		const before = await administrativeIssuer(s);
 
-		await s.issueToken(ADMIN, { amount: 100 });
-		await s.distributeToken(ADMIN, { toUserId: aliceId, amount: 100 });
-		await s.transferToken(alice, { toUserId: bobId, amount: 30 });
-		await s.transferToken(alice, { toUserId: aliceId, amount: 5 });
+		await evictDurableObject(s);
 
-		const first = await s.getTransactionHistory(alice, userSelector(aliceId), {
-			limit: 1,
-		});
-		expect(first.ok).toBe(true);
-		if (!first.ok) return;
-		expect(first.value.entries).toHaveLength(1);
-		expect(first.value.entries[0]).toMatchObject({
-			kind: "P2P_TRANSFER",
-			direction: "self",
-			counterparty: aliceId,
-		});
-		expect(first.value.nextCursor).not.toBeNull();
-
-		const rest = await s.getTransactionHistory(alice, userSelector(aliceId), {
-			limit: 100,
-			cursor: first.value.nextCursor,
-		});
-		expect(rest.ok).toBe(true);
-		if (!rest.ok) return;
-		expect(rest.value.entries.map((e) => e.direction)).toEqual(["out", "in"]);
-		expect(rest.value.nextCursor).toBeNull();
+		expect(await administrativeIssuer(s)).toBe(before);
+		expect(await count(s, "principals")).toBe(1);
 	});
 
-	it("rejects out-of-contract history limits without clamping", async () => {
+	it("has no superseded EconomicOperation/LedgerTransaction/Wallet/User tables", async () => {
 		const s = freshStub();
-		await s.createUser("alice");
-		const alice = userActor("alice");
+		const tables = (
+			await query<{ name: string }>(
+				s,
+				"SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '\\_%' ESCAPE '\\' AND name NOT LIKE 'sqlite_%'",
+			)
+		)
+			.map((t) => t.name)
+			.sort();
 
-		for (const limit of [0, 101, 1.5]) {
-			const page = await s.getTransactionHistory(
-				alice,
-				userSelector(rehydrate.userId("alice")),
-				{ limit },
-			);
-			expect(page).toEqual({
-				ok: false,
-				error: {
-					type: "invalid-input",
-					code: "INVALID_LIMIT",
-					detail: expect.any(String),
-				},
-			});
-		}
+		expect(tables).toEqual([
+			"accounts",
+			"administrative_issuer",
+			"default_accounts",
+			"idempotency_records",
+			"identity_bindings",
+			"principals",
+			"registration_intents",
+			"transactions",
+		]);
+	});
+
+	it("gives primitive tables no kind, role, default, reserve, or treasury column", async () => {
+		const s = freshStub();
+		const columns = async (table: string) =>
+			(await query<{ name: string }>(s, `PRAGMA table_info(${table})`))
+				.map((c) => c.name)
+				.sort();
+
+		expect(await columns("principals")).toEqual(["created_at", "id"]);
+		expect(await columns("accounts")).toEqual([
+			"balance",
+			"created_at",
+			"id",
+			"owner_principal_id",
+			"updated_at",
+		]);
+		expect(await columns("transactions")).toEqual([
+			"amount",
+			"committed_at",
+			"destination_account_id",
+			"id",
+			"issuer_principal_id",
+			"kind",
+			"source_account_id",
+		]);
 	});
 });
 
 describe("schema monetary domain enforcement", () => {
-	const MAX = Number.MAX_SAFE_INTEGER;
-
-	const INSERT_OP =
-		"INSERT INTO economic_operations (id, kind, metadata, actor_kind, actor_id, created_at) VALUES (?, 'TOKEN_ISSUANCE', NULL, 'service', 'admin-api', 1)";
-	const INSERT_LEDGER =
-		"INSERT INTO ledger_transactions (id, operation_id, from_wallet_id, to_wallet_id, amount, created_at) VALUES (?, ?, 'treasury', 'treasury', ?, 1)";
-
-	it("stores the maximum wallet balance and round-trips it exactly", async () => {
+	it("stores the maximum balance and amount and round-trips them exactly", async () => {
 		const s = freshStub();
-		await runInDurableObject(s, async (_i, state) => {
-			state.storage.sql.exec(
-				"UPDATE wallets SET balance = ?, updated_at = 1 WHERE id = 'treasury'",
-				MAX,
-			);
-			const row = state.storage.sql
-				.exec("SELECT balance FROM wallets WHERE id = 'treasury'")
-				.one();
-			expect(row["balance"]).toBe(MAX);
-		});
+		const alice = await seedIdentity(s, identity("alice"));
+		await fund(s, identity("alice"), MAX);
+
+		const [account] = await query<{ balance: number }>(
+			s,
+			"SELECT balance FROM accounts WHERE id = ?",
+			alice.accountId,
+		);
+		const [tx] = await query<{ amount: number }>(
+			s,
+			"SELECT amount FROM transactions",
+		);
+		expect(account?.balance).toBe(MAX);
+		expect(tx?.amount).toBe(MAX);
 	});
 
-	it("rejects out-of-domain balances at the DB boundary, not just in code", async () => {
+	it("rejects out-of-domain balances at the DB boundary", async () => {
 		const s = freshStub();
+		const alice = await seedIdentity(s, identity("alice"));
 		for (const balance of [MAX + 1, -1, 1.5]) {
-			await expect(
-				runInDurableObject(s, async (_i, state) => {
-					state.storage.sql.exec(
-						"UPDATE wallets SET balance = ? WHERE id = 'treasury'",
-						balance,
-					);
-				}),
-			).rejects.toThrow();
+			expect(
+				await rejects(
+					s,
+					"UPDATE accounts SET balance = ? WHERE id = ?",
+					balance,
+					alice.accountId,
+				),
+			).toBe(true);
 		}
-		await runInDurableObject(s, async (_i, state) => {
-			const row = state.storage.sql
-				.exec("SELECT balance FROM wallets WHERE id = 'treasury'")
-				.one();
-			expect(row["balance"]).toBe(0);
-		});
+		const [row] = await query<{ balance: number }>(
+			s,
+			"SELECT balance FROM accounts WHERE id = ?",
+			alice.accountId,
+		);
+		expect(row?.balance).toBe(0);
 	});
 
-	it("stores the maximum ledger amount and round-trips it exactly", async () => {
+	it("rejects out-of-domain Transaction amounts at the DB boundary", async () => {
 		const s = freshStub();
-		const operationId = crypto.randomUUID();
-		await runInDurableObject(s, async (_i, state) => {
-			// Operation and ledger pair must commit inside one transaction:
-			// the reciprocal deferred FKs admit neither side alone.
-			state.storage.transactionSync(() => {
-				state.storage.sql.exec(INSERT_OP, operationId);
-				state.storage.sql.exec(
-					INSERT_LEDGER,
-					crypto.randomUUID(),
-					operationId,
-					MAX,
-				);
-			});
-			const row = state.storage.sql
-				.exec(
-					"SELECT amount FROM ledger_transactions WHERE operation_id = ?",
-					operationId,
-				)
-				.one();
-			expect(row["amount"]).toBe(MAX);
-		});
-	});
-
-	it("rejects out-of-domain ledger amounts at the DB boundary and rolls the pair back", async () => {
-		const s = freshStub();
+		const alice = await seedIdentity(s, identity("alice"));
+		const issuer = await administrativeIssuer(s);
 		for (const amount of [MAX + 1, 0, -3, 2.5]) {
-			const operationId = crypto.randomUUID();
-			await expect(
-				runInDurableObject(s, async (_i, state) => {
-					state.storage.transactionSync(() => {
-						state.storage.sql.exec(INSERT_OP, operationId);
-						state.storage.sql.exec(
-							INSERT_LEDGER,
-							crypto.randomUUID(),
-							operationId,
-							amount,
-						);
-					});
-				}),
-			).rejects.toThrow();
-			// The failed pair leaves no orphan operation behind.
-			await runInDurableObject(s, async (_i, state) => {
-				const row = state.storage.sql
-					.exec(
-						"SELECT COUNT(*) AS n FROM economic_operations WHERE id = ?",
-						operationId,
-					)
-					.one();
-				expect(row["n"]).toBe(0);
-			});
+			expect(
+				await rejects(
+					s,
+					"INSERT INTO transactions (id, kind, issuer_principal_id, source_account_id, destination_account_id, amount, committed_at) VALUES (?, 'ISSUE', ?, NULL, ?, ?, 1)",
+					crypto.randomUUID(),
+					issuer,
+					alice.accountId,
+					amount,
+				),
+			).toBe(true);
 		}
+		expect(await count(s, "transactions")).toBe(0);
 	});
 });
 
 describe("schema structural invariants", () => {
-	it("seeds exactly one system wallet named 'treasury'", async () => {
-		const s = freshStub();
-		await runInDurableObject(s, async (_i, state) => {
-			const systems = state.storage.sql
-				.exec("SELECT id, kind FROM wallets WHERE kind = 'system'")
-				.toArray();
-			expect(systems).toEqual([{ id: "treasury", kind: "system" }]);
-		});
-	});
+	const INSERT_TX =
+		"INSERT INTO transactions (id, kind, issuer_principal_id, source_account_id, destination_account_id, amount, committed_at) VALUES (?, ?, ?, ?, ?, 1, 1)";
 
-	it("rejects a second system wallet and treasury-id mismatches", async () => {
+	it("binds Transaction kind to its shape: ISSUE has an issuer and no source, TRANSFER a source and no issuer", async () => {
 		const s = freshStub();
-		// kind = 'system' AND id != 'treasury'
-		await expect(
-			runInDurableObject(s, async (_i, state) => {
-				state.storage.sql.exec(
-					"INSERT INTO wallets (id, kind, owner_user_id, balance, created_at, updated_at) VALUES ('other', 'system', NULL, 0, 1, 1)",
-				);
-			}),
-		).rejects.toThrow();
-		// id = 'treasury' AND kind != 'system'
-		await s.createUser("alice");
-		await expect(
-			runInDurableObject(s, async (_i, state) => {
-				state.storage.sql.exec(
-					"INSERT INTO wallets (id, kind, owner_user_id, balance, created_at, updated_at) VALUES ('treasury', 'user', 'alice', 0, 1, 1)",
-				);
-			}),
-		).rejects.toThrow();
-	});
-
-	it("enforces one ledger row per economic operation", async () => {
-		const s = freshStub();
-		const operationId = crypto.randomUUID();
-		await runInDurableObject(s, async (_i, state) => {
-			state.storage.transactionSync(() => {
-				state.storage.sql.exec(
-					"INSERT INTO economic_operations (id, kind, metadata, actor_kind, actor_id, created_at) VALUES (?, 'DISTRIBUTION', NULL, 'service', 'admin-api', 1)",
-					operationId,
-				);
-				state.storage.sql.exec(
-					"INSERT INTO ledger_transactions (id, operation_id, from_wallet_id, to_wallet_id, amount, created_at) VALUES (?, ?, 'treasury', 'treasury', 5, 1)",
+		const alice = await seedIdentity(s, identity("alice"));
+		const bob = await seedIdentity(s, identity("bob"));
+		const issuer = await administrativeIssuer(s);
+		const cases: readonly [string, string | null, string | null][] = [
+			["ISSUE", null, null],
+			["ISSUE", issuer, alice.accountId],
+			["TRANSFER", null, null],
+			["TRANSFER", issuer, alice.accountId],
+			["BURN", issuer, null],
+			["DISTRIBUTION", null, alice.accountId],
+		];
+		for (const [kind, issuerId, source] of cases) {
+			expect(
+				await rejects(
+					s,
+					INSERT_TX,
 					crypto.randomUUID(),
-					operationId,
-				);
-			});
-		});
-		await expect(
-			runInDurableObject(s, async (_i, state) => {
-				state.storage.sql.exec(
-					"INSERT INTO ledger_transactions (id, operation_id, from_wallet_id, to_wallet_id, amount, created_at) VALUES (?, ?, 'treasury', 'treasury', 7, 1)",
-					crypto.randomUUID(),
-					operationId,
-				);
-			}),
-		).rejects.toThrow();
+					kind,
+					issuerId,
+					source,
+					bob.accountId,
+				),
+				`${kind} issuer=${issuerId} source=${source}`,
+			).toBe(true);
+		}
+		expect(
+			await rejects(
+				s,
+				INSERT_TX,
+				crypto.randomUUID(),
+				"ISSUE",
+				issuer,
+				null,
+				bob.accountId,
+			),
+		).toBe(false);
+		expect(
+			await rejects(
+				s,
+				INSERT_TX,
+				crypto.randomUUID(),
+				"TRANSFER",
+				null,
+				alice.accountId,
+				bob.accountId,
+			),
+		).toBe(false);
 	});
 
-	it("rejects deleting the treasury wallet but still allows balance updates", async () => {
+	it("requires existing issuer Principal and Accounts on every Transaction", async () => {
 		const s = freshStub();
-		await expect(
-			runInDurableObject(s, async (_i, state) => {
-				state.storage.sql.exec("DELETE FROM wallets WHERE id = 'treasury'");
-			}),
-		).rejects.toThrow();
-		// balance / updated_at remain mutable on the treasury row.
-		await runInDurableObject(s, async (_i, state) => {
+		const alice = await seedIdentity(s, identity("alice"));
+		const issuer = await administrativeIssuer(s);
+
+		expect(
+			await rejects(
+				s,
+				INSERT_TX,
+				crypto.randomUUID(),
+				"ISSUE",
+				"ghost-principal",
+				null,
+				alice.accountId,
+			),
+		).toBe(true);
+		expect(
+			await rejects(
+				s,
+				INSERT_TX,
+				crypto.randomUUID(),
+				"ISSUE",
+				issuer,
+				null,
+				"ghost-account",
+			),
+		).toBe(true);
+		expect(
+			await rejects(
+				s,
+				INSERT_TX,
+				crypto.randomUUID(),
+				"TRANSFER",
+				null,
+				"ghost-account",
+				alice.accountId,
+			),
+		).toBe(true);
+	});
+
+	it("requires an existing owner Principal and keeps Account identity immutable and undeletable", async () => {
+		const s = freshStub();
+		const alice = await seedIdentity(s, identity("alice"));
+		const bob = await seedIdentity(s, identity("bob"));
+
+		expect(
+			await rejects(
+				s,
+				"INSERT INTO accounts (id, owner_principal_id, balance, created_at, updated_at) VALUES (?, 'ghost', 0, 0, 0)",
+				crypto.randomUUID(),
+			),
+		).toBe(true);
+		expect(
+			await rejects(
+				s,
+				"UPDATE accounts SET owner_principal_id = ? WHERE id = ?",
+				bob.principalId,
+				alice.accountId,
+			),
+		).toBe(true);
+		expect(
+			await rejects(s, "DELETE FROM accounts WHERE id = ?", alice.accountId),
+		).toBe(true);
+	});
+
+	it("admits at most one default designation per Principal", async () => {
+		const s = freshStub();
+		const alice = await seedIdentity(s, identity("alice"));
+		const second = crypto.randomUUID();
+		await runInDurableObject(s, (_i, state) => {
 			state.storage.sql.exec(
-				"UPDATE wallets SET balance = 42, updated_at = 9 WHERE id = 'treasury'",
+				"INSERT INTO accounts (id, owner_principal_id, balance, created_at, updated_at) VALUES (?, ?, 0, 0, 0)",
+				second,
+				alice.principalId,
 			);
-			const row = state.storage.sql
-				.exec("SELECT balance, updated_at FROM wallets WHERE id = 'treasury'")
-				.one();
-			expect(row["balance"]).toBe(42);
-			expect(row["updated_at"]).toBe(9);
 		});
+
+		expect(
+			await rejects(
+				s,
+				"INSERT INTO default_accounts (principal_id, account_id, created_at) VALUES (?, ?, 0)",
+				alice.principalId,
+				second,
+			),
+		).toBe(true);
+		expect(
+			await query(
+				s,
+				"SELECT account_id FROM default_accounts WHERE principal_id = ?",
+				alice.principalId,
+			),
+		).toEqual([{ account_id: alice.accountId }]);
 	});
 
-	it("rejects converting the treasury row into a user wallet", async () => {
+	it("requires the designated Account to be owned by the same Principal", async () => {
 		const s = freshStub();
-		await s.createUser("alice");
-		await expect(
-			runInDurableObject(s, async (_i, state) => {
-				state.storage.sql.exec(
-					"UPDATE wallets SET id = 'hijacked', kind = 'user', owner_user_id = 'alice' WHERE id = 'treasury'",
-				);
-			}),
-		).rejects.toThrow();
-		// The deployment still has its one system wallet named treasury.
-		await runInDurableObject(s, async (_i, state) => {
-			const systems = state.storage.sql
-				.exec("SELECT id, kind FROM wallets WHERE kind = 'system'")
-				.toArray();
-			expect(systems).toEqual([{ id: "treasury", kind: "system" }]);
+		const alice = await seedIdentity(s, identity("alice"));
+		const bare = crypto.randomUUID();
+		await runInDurableObject(s, (_i, state) => {
+			state.storage.sql.exec(
+				"INSERT INTO principals (id, created_at) VALUES (?, 0)",
+				bare,
+			);
 		});
-	});
-});
 
-describe("operation-ledger exact 1:1 at commit", () => {
-	const INSERT_OP =
-		"INSERT INTO economic_operations (id, kind, metadata, actor_kind, actor_id, created_at) VALUES (?, 'TOKEN_ISSUANCE', NULL, 'service', 'admin-api', 1)";
-
-	/**
-	 * In workerd a deferred-FK violation surfaces at the output-gate commit:
-	 * the DO is reset and rolled back to its last durable state, and the
-	 * same stub stays poisoned — so verification re-opens the same DO id on
-	 * a fresh stub and confirms the rolled-back state contains no orphan.
-	 */
-	function stubFor(name: string): DurableObjectStub<CommunityState> {
-		const id = env.COMMUNITY_STATE.idFromName(name);
-		return env.COMMUNITY_STATE.get(id) as DurableObjectStub<CommunityState>;
-	}
-
-	it("fails a transaction that commits an EconomicOperation without its ledger", async () => {
-		const name = crypto.randomUUID();
-		const operationId = crypto.randomUUID();
-		await expect(
-			runInDurableObject(stubFor(name), async (_i, state) => {
-				state.storage.transactionSync(() => {
-					state.storage.sql.exec(INSERT_OP, operationId);
-				});
-			}),
-		).rejects.toThrow(/FOREIGN KEY|reset/);
-		await runInDurableObject(stubFor(name), async (_i, state) => {
-			const row = state.storage.sql
-				.exec(
-					"SELECT COUNT(*) AS n FROM economic_operations WHERE id = ?",
-					operationId,
-				)
-				.one();
-			expect(row["n"]).toBe(0);
-		});
+		expect(
+			await rejects(
+				s,
+				"INSERT INTO default_accounts (principal_id, account_id, created_at) VALUES (?, ?, 0)",
+				bare,
+				alice.accountId,
+			),
+		).toBe(true);
+		expect(
+			await rejects(
+				s,
+				"UPDATE default_accounts SET account_id = ? WHERE principal_id = ?",
+				crypto.randomUUID(),
+				alice.principalId,
+			),
+		).toBe(true);
+		expect(
+			await rejects(
+				s,
+				"DELETE FROM default_accounts WHERE principal_id = ?",
+				alice.principalId,
+			),
+		).toBe(true);
 	});
 
-	it("fails a transaction that commits a LedgerTransaction without its operation", async () => {
-		const name = crypto.randomUUID();
-		const operationId = crypto.randomUUID();
-		await expect(
-			runInDurableObject(stubFor(name), async (_i, state) => {
-				state.storage.transactionSync(() => {
-					state.storage.sql.exec(
-						"INSERT INTO ledger_transactions (id, operation_id, from_wallet_id, to_wallet_id, amount, created_at) VALUES (?, ?, 'treasury', 'treasury', 5, 1)",
-						crypto.randomUUID(),
-						operationId,
-					);
-				});
-			}),
-		).rejects.toThrow(/FOREIGN KEY|reset/);
-		await runInDurableObject(stubFor(name), async (_i, state) => {
-			const row = state.storage.sql
-				.exec("SELECT COUNT(*) AS n FROM ledger_transactions")
-				.one();
-			expect(row["n"]).toBe(0);
+	it("keeps the administrative issuer mapping a single immutable row", async () => {
+		const s = freshStub();
+		const other = crypto.randomUUID();
+		await runInDurableObject(s, (_i, state) => {
+			state.storage.sql.exec(
+				"INSERT INTO principals (id, created_at) VALUES (?, 0)",
+				other,
+			);
 		});
+
+		expect(
+			await rejects(
+				s,
+				"INSERT INTO administrative_issuer (singleton, principal_id, created_at) VALUES (1, ?, 0)",
+				other,
+			),
+		).toBe(true);
+		expect(
+			await rejects(
+				s,
+				"INSERT INTO administrative_issuer (singleton, principal_id, created_at) VALUES (2, ?, 0)",
+				other,
+			),
+		).toBe(true);
+		expect(
+			await rejects(
+				s,
+				"UPDATE administrative_issuer SET principal_id = ?",
+				other,
+			),
+		).toBe(true);
+		expect(await rejects(s, "DELETE FROM administrative_issuer")).toBe(true);
+	});
+
+	it("rejects updates and deletes on every append-only table", async () => {
+		const s = freshStub();
+		await seedIdentity(s, identity("alice"));
+		await fund(s, identity("alice"), 5);
+
+		for (const statement of [
+			"UPDATE transactions SET amount = 999",
+			"DELETE FROM transactions",
+			"UPDATE principals SET created_at = 9",
+			"DELETE FROM principals",
+			"UPDATE identity_bindings SET subject = 'x'",
+			"DELETE FROM identity_bindings",
+			"UPDATE idempotency_records SET stored_result = '{}'",
+			"DELETE FROM idempotency_records",
+		]) {
+			expect(await rejects(s, statement), statement).toBe(true);
+		}
+		expect(await count(s, "transactions")).toBe(1);
+		expect(await count(s, "idempotency_records")).toBe(1);
 	});
 });
 
 describe("serialization and atomicity", () => {
-	it("serializes concurrent mutations; no double-spend, no lost update", async () => {
+	it("serializes concurrent transfers; no double-spend, no lost update", async () => {
 		const s = freshStub();
-		await s.createUser("alice");
-		await s.createUser("bob");
-		const alice = userActor("alice");
-		const bobId = rehydrate.userId("bob");
+		const alice = await seedIdentity(s, identity("alice"));
+		const bob = await seedIdentity(s, identity("bob"));
+		await fund(s, identity("alice"), 100);
 
-		await s.issueToken(ADMIN, { amount: 100 });
-		await s.distributeToken(ADMIN, {
-			toUserId: rehydrate.userId("alice"),
-			amount: 100,
-		});
-
-		const attempts = await Promise.allSettled(
+		const attempts = await Promise.all(
 			Array.from({ length: 20 }, () =>
-				s.transferToken(alice, { toUserId: bobId, amount: 10 }),
+				rpc(s).internalTransfer(DISCORD_ADAPTER_CALLER, idempotency(), {
+					from: identity("alice"),
+					to: identity("bob"),
+					amount: 10,
+				}),
 			),
 		);
-		const succeeded = attempts.filter(
-			(a) => a.status === "fulfilled" && a.value.ok,
-		);
-		expect(succeeded).toHaveLength(10);
 
-		expect(await s.totalSupply()).toBe(100);
-		const aliceBalance = await s.getBalance(
-			alice,
-			userSelector(rehydrate.userId("alice")),
+		expect(attempts.filter((a) => a.status === 200)).toHaveLength(10);
+		expect(attempts.filter((a) => a.status === 422)).toHaveLength(10);
+		const balances = await query<{ id: string; balance: number }>(
+			s,
+			"SELECT id, balance FROM accounts",
 		);
-		expect(aliceBalance).toEqual({ ok: true, value: { balance: 0 } });
-		const bobBalance = await s.getBalance(
-			userActor("bob"),
-			userSelector(bobId),
-		);
-		expect(bobBalance).toEqual({ ok: true, value: { balance: 100 } });
+		expect(balances.find((a) => a.id === alice.accountId)?.balance).toBe(0);
+		expect(balances.find((a) => a.id === bob.accountId)?.balance).toBe(100);
+		expect(await count(s, "transactions")).toBe(11);
 	});
 
 	it("rolls back a section that fails after a partial write", async () => {
 		const s = freshStub();
+		const alice = await seedIdentity(s, identity("alice"));
 		await runInDurableObject(s, async (_instance, state) => {
 			const uow = createStorageUnitOfWork(state.storage, {
 				nowMs: () => 1_234,
 			});
 			expect(() =>
 				uow.transact((ctx) => {
-					ctx.wallets.setBalance(rehydrate.walletId("treasury"), 50, 1);
+					ctx.accounts.setBalance(rehydrate.accountId(alice.accountId), 50, 1);
 					throw new Error("boom");
 				}),
 			).toThrow("boom");
 		});
 
-		const treasury = await s.getBalance(ADMIN, TREASURY_SELECTOR);
-		expect(treasury).toEqual({ ok: true, value: { balance: 0 } });
-	});
-
-	it("rejects updates and deletes on both append-only tables", async () => {
-		const s = freshStub();
-		await s.issueToken(ADMIN, { amount: 5 });
-
-		for (const sql of [
-			"UPDATE economic_operations SET kind = 'DISTRIBUTION'",
-			"DELETE FROM economic_operations",
-			"UPDATE ledger_transactions SET amount = 999",
-			"DELETE FROM ledger_transactions",
-		]) {
-			await expect(
-				runInDurableObject(s, async (_i, state) => {
-					state.storage.sql.exec(sql);
-				}),
-			).rejects.toThrow();
-		}
+		expect(
+			await rpc(s).internalBalance(DISCORD_ADAPTER_CALLER, identity("alice")),
+		).toEqual({
+			status: 200,
+			body: { balance: 0 },
+		});
 	});
 
 	it("preserves committed state across Durable Object eviction", async () => {
 		const s = freshStub();
-		await s.createUser("alice");
-		await s.issueToken(ADMIN, { amount: 100 });
-		await s.distributeToken(ADMIN, {
-			toUserId: rehydrate.userId("alice"),
-			amount: 70,
+		await seedIdentity(s, identity("alice"));
+		await seedIdentity(s, identity("bob"));
+		await fund(s, identity("alice"), 100);
+		await rpc(s).internalTransfer(DISCORD_ADAPTER_CALLER, idempotency(), {
+			from: identity("alice"),
+			to: identity("bob"),
+			amount: 30,
 		});
 
 		await evictDurableObject(s);
 
-		expect(await s.totalSupply()).toBe(100);
-		const balance = await s.getBalance(
-			userActor("alice"),
-			userSelector(rehydrate.userId("alice")),
-		);
-		expect(balance).toEqual({ ok: true, value: { balance: 70 } });
-		expect(await s.listOperations()).toHaveLength(2);
-		expect(await s.listLedger()).toHaveLength(2);
-	});
-});
-
-describe("safe-integer storage", () => {
-	it("round-trips the maximum monetary value exactly", async () => {
-		const s = freshStub();
-		const max = Number.MAX_SAFE_INTEGER;
-		await s.issueToken(ADMIN, { amount: max });
-
-		const treasury = await s.getBalance(ADMIN, TREASURY_SELECTOR);
-		expect(treasury).toEqual({ ok: true, value: { balance: max } });
-		expect(await s.totalSupply()).toBe(max);
-		expect(await s.issuedAmount()).toBe(max);
-		const ledger = await s.listLedger();
-		expect(ledger[0]?.amount).toBe(max);
-	});
-
-	it("rejects issuance that would overflow the total supply domain", async () => {
-		const s = freshStub();
-		await s.createUser("alice");
-		await s.issueToken(ADMIN, { amount: Number.MAX_SAFE_INTEGER });
-		await s.distributeToken(ADMIN, {
-			toUserId: rehydrate.userId("alice"),
-			amount: 5,
-		});
-
-		const result = await s.issueToken(ADMIN, { amount: 3 });
-		expect(result).toEqual({
-			ok: false,
-			error: {
-				type: "rejected",
-				code: "OVERFLOW",
-				detail: expect.any(String),
-			},
-		});
-		expect(await s.totalSupply()).toBe(Number.MAX_SAFE_INTEGER);
+		expect(
+			await rpc(s).internalBalance(DISCORD_ADAPTER_CALLER, identity("alice")),
+		).toEqual({ status: 200, body: { balance: 70 } });
+		expect(
+			await rpc(s).internalBalance(DISCORD_ADAPTER_CALLER, identity("bob")),
+		).toEqual({ status: 200, body: { balance: 30 } });
+		expect(await count(s, "transactions")).toBe(2);
 	});
 });
 
@@ -566,48 +556,40 @@ describe("production UnitOfWork", () => {
 	it("permanently revokes context and repository handles at section close", async () => {
 		const s = freshStub();
 		await runInDurableObject(s, async (_i, state) => {
-			const uow = createStorageUnitOfWork(state.storage, {
-				nowMs: () => 1,
-			});
-			let escapedWallets: TransactionContext["wallets"] | undefined;
+			const uow = createStorageUnitOfWork(state.storage, { nowMs: () => 1 });
+			let escaped: TransactionContext["accounts"] | undefined;
 			uow.transact((ctx) => {
-				escapedWallets = ctx.wallets;
+				escaped = ctx.accounts;
 			});
-			expect(escapedWallets).toBeDefined();
-			expect(() => escapedWallets?.totalSupply()).toThrow(/closed/);
-			// A later open section never revives the stale handle.
+			expect(escaped).toBeDefined();
+			expect(() => escaped?.totalSupply()).toThrow(/closed/);
 			uow.transact(() => {
-				expect(() => escapedWallets?.findById(rehydrate.walletId("t"))).toThrow(
+				expect(() => escaped?.findById(rehydrate.accountId("a"))).toThrow(
 					/closed/,
 				);
 			});
 		});
 	});
 
-	it("permanently revokes the TransactionContext itself at section close", async () => {
+	it("permanently revokes the TransactionContext itself after commit and rollback", async () => {
 		const s = freshStub();
 		await runInDurableObject(s, async (_i, state) => {
-			const uow = createStorageUnitOfWork(state.storage, {
-				nowMs: () => 1,
-			});
-
-			const expectRevoked = (ctx: TransactionContext) => {
-				expect(() => ctx.nowMs).toThrow(/closed/);
-				expect(() => ctx.wallets).toThrow(/closed/);
-				expect(() => ctx.operations).toThrow(/closed/);
-				expect(() => ctx.ledger).toThrow(/closed/);
-				expect(() => ctx.identityBindings).toThrow(/closed/);
-				expect(() => ctx.idempotencyRecords).toThrow(/closed/);
-			};
-
-			// Committed section: every context property read is dead afterward.
+			const uow = createStorageUnitOfWork(state.storage, { nowMs: () => 1 });
+			const keys: readonly (keyof TransactionContext)[] = [
+				"nowMs",
+				"principals",
+				"accounts",
+				"defaultAccounts",
+				"transactions",
+				"identityBindings",
+				"administrativeIssuer",
+				"idempotencyRecords",
+				"registrationIntents",
+			];
 			let committed: TransactionContext | undefined;
 			uow.transact((ctx) => {
 				committed = ctx;
 			});
-			expectRevoked(committed as TransactionContext);
-
-			// Rolled-back section: revocation is identical.
 			let aborted: TransactionContext | undefined;
 			expect(() =>
 				uow.transact((ctx) => {
@@ -615,50 +597,42 @@ describe("production UnitOfWork", () => {
 					throw new Error("boom");
 				}),
 			).toThrow("boom");
-			expectRevoked(aborted as TransactionContext);
+			for (const ctx of [committed, aborted]) {
+				for (const key of keys) {
+					expect(() => (ctx as TransactionContext)[key]).toThrow(/closed/);
+				}
+			}
 		});
 	});
 
-	it("rejects nested transact sections", async () => {
+	it("rejects nested sections and object- or function-valued thenables with rollback", async () => {
 		const s = freshStub();
+		const alice = await seedIdentity(s, identity("alice"));
 		await runInDurableObject(s, async (_i, state) => {
-			const uow = createStorageUnitOfWork(state.storage, {
-				nowMs: () => 1,
-			});
+			const uow = createStorageUnitOfWork(state.storage, { nowMs: () => 1 });
+			const id = rehydrate.accountId(alice.accountId);
 			expect(() => uow.transact(() => uow.transact(() => 1))).toThrow(/nested/);
-		});
-	});
-
-	it("rejects object- and function-valued thenables and rolls back", async () => {
-		const s = freshStub();
-		await runInDurableObject(s, async (_i, state) => {
-			const uow = createStorageUnitOfWork(state.storage, {
-				nowMs: () => 1,
-			});
 			expect(() =>
 				uow.transact((ctx) => {
-					ctx.wallets.setBalance(rehydrate.walletId("treasury"), 9, 1);
+					ctx.accounts.setBalance(id, 9, 1);
 					return Promise.resolve(1) as never;
 				}),
 			).toThrow(/PromiseLike/);
-			// Deliberate function-valued thenable: the port contract requires
-			// runtime rejection of thenables on functions, not only objects.
 			// biome-ignore lint/suspicious/noThenProperty: intentional thenable fixture
 			const functionThenable = Object.assign(() => 1, { then() {} });
-			expect(() => uow.transact(() => functionThenable as never)).toThrow(
-				/PromiseLike/,
-			);
-			expect(
-				uow.transact(
-					(ctx) =>
-						ctx.wallets.findById(rehydrate.walletId("treasury"))?.balance,
-				),
-			).toBe(0);
+			expect(() =>
+				uow.transact((ctx) => {
+					ctx.accounts.setBalance(id, 9, 1);
+					return functionThenable as never;
+				}),
+			).toThrow(/PromiseLike/);
+			expect(uow.transact((ctx) => ctx.accounts.findById(id)?.balance)).toBe(0);
 		});
 	});
 
-	it("samples the injected clock exactly once per section", async () => {
+	it("samples the clock once per section and hands out frozen records", async () => {
 		const s = freshStub();
+		const alice = await seedIdentity(s, identity("alice"));
 		await runInDurableObject(s, async (_i, state) => {
 			let samples = 0;
 			const uow = createStorageUnitOfWork(state.storage, {
@@ -667,284 +641,260 @@ describe("production UnitOfWork", () => {
 					return 7_777;
 				},
 			});
-			const stamp = uow.transact((ctx) => ctx.nowMs);
-			expect(stamp).toBe(7_777);
+			uow.transact((ctx) => {
+				const account = ctx.accounts.findById(
+					rehydrate.accountId(alice.accountId),
+				);
+				expect(Object.isFrozen(account)).toBe(true);
+				expect(() => {
+					(account as { balance: number }).balance = 9;
+				}).toThrow();
+				expect(ctx.nowMs).toBe(7_777);
+			});
 			expect(samples).toBe(1);
 		});
 	});
 
-	it("hands out records that cannot alias-mutate stored state", async () => {
+	it("stamps the Transaction, balance, and replay record with the one frozen clock sample", async () => {
 		const s = freshStub();
-		await runInDurableObject(s, async (_i, state) => {
-			const uow = createStorageUnitOfWork(state.storage, {
-				nowMs: () => 1,
-			});
-			uow.transact((ctx) => {
-				const treasury = ctx.wallets.findById(rehydrate.walletId("treasury"));
-				expect(treasury).toBeDefined();
-				expect(Object.isFrozen(treasury)).toBe(true);
-				expect(() => {
-					(treasury as { balance: number }).balance = 9;
-				}).toThrow();
-			});
-			expect(
-				uow.transact(
-					(ctx) =>
-						ctx.wallets.findById(rehydrate.walletId("treasury"))?.balance,
-				),
-			).toBe(0);
-		});
-	});
-
-	it("stamps every write in a section with the one frozen clock sample", async () => {
-		const s = freshStub();
+		const alice = await seedIdentity(s, identity("alice"));
 		await runInDurableObject(s, async (instance) => {
 			instance.clock = { nowMs: () => 5_555 };
 		});
-		await s.issueToken(ADMIN, { amount: 5 });
+		await fund(s, identity("alice"), 5);
 
-		const ops = await s.listOperations();
-		const ledger = await s.listLedger();
-		expect(ops[0]?.created_at).toBe(5_555);
-		expect(ledger[0]?.created_at).toBe(5_555);
+		const [tx] = await query<{ committed_at: number }>(
+			s,
+			"SELECT committed_at FROM transactions",
+		);
+		const [account] = await query<{ updated_at: number }>(
+			s,
+			"SELECT updated_at FROM accounts WHERE id = ?",
+			alice.accountId,
+		);
+		const [record] = await query<{ created_at: number }>(
+			s,
+			"SELECT created_at FROM idempotency_records",
+		);
+		expect(tx?.committed_at).toBe(5_555);
+		expect(account?.updated_at).toBe(5_555);
+		expect(record?.created_at).toBe(5_555);
 	});
 });
 
-describe("harness actor persistence", () => {
-	it("persists the deterministic actor mapping on operation rows", async () => {
-		const s = freshStub();
-		await s.createUser("alice");
-		const aliceId = rehydrate.userId("alice");
+describe("route-facing methods", () => {
+	it("exposes exactly the route-facing RPC surface — no generic ledger or test-support method", () => {
+		const methods = Object.getOwnPropertyNames(CommunityState.prototype)
+			.filter((name) => name !== "constructor")
+			.sort();
 
-		await s.applyEconomicCommand(ADMIN, {
-			kind: "TOKEN_ISSUANCE",
-			from: TREASURY_SELECTOR,
-			to: TREASURY_SELECTOR,
-			amount: 10,
+		expect(methods).toEqual([
+			"adminIssue",
+			"apiCreateRegistrationIntent",
+			"completeOidcRegistration",
+			"getOidcRegistrationIntent",
+			"internalBalance",
+			"internalHistory",
+			"internalTransfer",
+		]);
+	});
+
+	it("backstops the route-group caller inside the object", async () => {
+		const s = freshStub();
+		await seedIdentity(s, identity("alice"));
+		const target = identity("alice");
+
+		expect(
+			await rpc(s).adminIssue(DISCORD_ADAPTER_CALLER, idempotency(), {
+				target,
+				amount: 1,
+			}),
+		).toMatchObject({ status: 403 });
+		expect(
+			await rpc(s).internalBalance(ADMIN_API_CALLER, target),
+		).toMatchObject({
+			status: 403,
 		});
-		await s.applyEconomicCommand(
-			{ kind: "user", userId: aliceId },
+		expect(
+			await rpc(s).internalHistory(ADMIN_API_CALLER, { ...target }),
+		).toMatchObject({ status: 403 });
+		expect(
+			await rpc(s).internalTransfer(ADMIN_API_CALLER, idempotency(), {
+				from: target,
+				to: target,
+				amount: 1,
+			}),
+		).toMatchObject({ status: 403 });
+		expect(await count(s, "transactions")).toBe(0);
+		expect(await count(s, "idempotency_records")).toBe(0);
+	});
+
+	it("adminIssue records the administrative issuer Principal and credits the target default Account", async () => {
+		const s = freshStub();
+		const alice = await seedIdentity(s, identity("alice"));
+		const issuer = await administrativeIssuer(s);
+
+		const response = await rpc(s).adminIssue(ADMIN_API_CALLER, idempotency(), {
+			target: identity("alice"),
+			amount: 40,
+		});
+
+		expect(response.status).toBe(200);
+		const rows = await query<Record<string, unknown>>(
+			s,
+			"SELECT id, kind, issuer_principal_id, source_account_id, destination_account_id, amount FROM transactions",
+		);
+		expect(rows).toEqual([
 			{
-				kind: "DISTRIBUTION",
-				from: TREASURY_SELECTOR,
-				to: userSelector(aliceId),
-				amount: 10,
+				id: (response.body as { transaction_id: string }).transaction_id,
+				kind: "ISSUE",
+				issuer_principal_id: issuer,
+				source_account_id: null,
+				destination_account_id: alice.accountId,
+				amount: 40,
+			},
+		]);
+	});
+
+	it("adminIssue replays a duplicate without duplicating supply and 409s key reuse", async () => {
+		const s = freshStub();
+		await seedIdentity(s, identity("alice"));
+		const params = idempotency("admin-key");
+
+		const first = await rpc(s).adminIssue(ADMIN_API_CALLER, params, {
+			target: identity("alice"),
+			amount: 25,
+		});
+		const replay = await rpc(s).adminIssue(ADMIN_API_CALLER, params, {
+			target: identity("alice"),
+			amount: 25,
+		});
+		const reuse = await rpc(s).adminIssue(
+			ADMIN_API_CALLER,
+			{ ...params, requestFingerprint: "different" },
+			{ target: identity("alice"), amount: 99 },
+		);
+
+		expect(replay).toEqual(first);
+		expect(reuse).toMatchObject({
+			status: 409,
+			body: { error: "idempotency_key_reuse" },
+		});
+		expect(await count(s, "transactions")).toBe(1);
+		const [supply] = await query<{ total: number }>(
+			s,
+			"SELECT SUM(balance) AS total FROM accounts",
+		);
+		expect(supply?.total).toBe(25);
+		const [record] = await query<{ stored_result: string }>(
+			s,
+			"SELECT stored_result FROM idempotency_records WHERE technical_caller = ? AND idempotency_key = ?",
+			ADMIN_API_CALLER,
+			"admin-key",
+		);
+		expect(JSON.parse(record?.stored_result ?? "null")).toEqual(first);
+	});
+
+	it("adminIssue failures record nothing and leave the key retryable", async () => {
+		const s = freshStub();
+		const params = idempotency("retry-key");
+
+		const unbound = await rpc(s).adminIssue(ADMIN_API_CALLER, params, {
+			target: identity("later"),
+			amount: 5,
+		});
+		expect(unbound).toMatchObject({
+			status: 404,
+			body: { error: "identity_not_bound" },
+		});
+		expect(await count(s, "idempotency_records")).toBe(0);
+
+		await seedIdentity(s, identity("later"));
+		const retried = await rpc(s).adminIssue(ADMIN_API_CALLER, params, {
+			target: identity("later"),
+			amount: 5,
+		});
+		expect(retried.status).toBe(200);
+		expect(await count(s, "transactions")).toBe(1);
+	});
+
+	it("internalTransfer commits the TRANSFER and its transaction_id replay record atomically", async () => {
+		const s = freshStub();
+		await seedIdentity(s, identity("alice"));
+		await seedIdentity(s, identity("bob"));
+		await fund(s, identity("alice"), 50);
+		const params = idempotency("transfer-key");
+
+		const first = await rpc(s).internalTransfer(
+			DISCORD_ADAPTER_CALLER,
+			params,
+			{
+				from: identity("alice"),
+				to: identity("bob"),
+				amount: 20,
+			},
+		);
+		const replay = await rpc(s).internalTransfer(
+			DISCORD_ADAPTER_CALLER,
+			params,
+			{
+				from: identity("alice"),
+				to: identity("bob"),
+				amount: 20,
 			},
 		);
 
-		const ops = await s.listOperations();
-		expect(ops[0]).toMatchObject({
-			kind: "TOKEN_ISSUANCE",
-			actor_kind: "service",
-			actor_id: "admin-api",
-		});
-		expect(ops[1]).toMatchObject({
-			kind: "DISTRIBUTION",
-			actor_kind: "user",
-			actor_id: "alice",
-		});
-	});
-});
-
-describe("route-facing methods (PR-3)", () => {
-	const DISCORD = "discord-adapter";
-	const ADMIN_PRINCIPAL = "admin-api";
-
-	function idempotency(
-		label: string,
-		fingerprint: string = `fp-${label}`,
-	): { key: string; fingerprintVersion: string; requestFingerprint: string } {
-		return {
-			key: label,
-			fingerprintVersion: "v1",
-			requestFingerprint: fingerprint,
-		};
-	}
-
-	it("backstops the route-group principal inside the object — never a credential", async () => {
-		const s = freshStub();
-		// The DO accepts an asserted principal, never bearer bytes: a raw
-		// credential string is simply an unknown principal and is denied.
-		for (const notPrincipal of [ADMIN_PRINCIPAL, "Bearer abc", ""]) {
-			const denied = await runInDurableObject(s, async (i) =>
-				i.internalBalance(notPrincipal as ServicePrincipal, {
-					issuer: "i",
-					subject: "s",
-				}),
-			);
-			expect(denied.status).toBe(403);
-		}
-		for (const notAdmin of [DISCORD, "Bearer abc"]) {
-			const denied = await runInDurableObject(s, async (i) =>
-				i.adminIssue(notAdmin as ServicePrincipal, { amount: 5 }),
-			);
-			expect(denied.status).toBe(403);
-		}
-	});
-
-	it("createBoundUser seeds user, wallet, and binding atomically", async () => {
-		const s = freshStub();
-		expect(await s.createBoundUser("alice", "iss", "sub")).toEqual({
-			ok: true,
-		});
-		// The binding resolves inside the route method's section.
-		const response = await runInDurableObject(s, async (i) =>
-			i.internalBalance(DISCORD, { issuer: "iss", subject: "sub" }),
+		const [tx] = await query<{ id: string }>(
+			s,
+			"SELECT id FROM transactions WHERE kind = 'TRANSFER'",
 		);
-		expect(response).toEqual({ status: 200, body: { balance: 0 } });
-		// Exact match: no normalization on either component.
-		const missed = await runInDurableObject(s, async (i) =>
-			i.internalBalance(DISCORD, { issuer: "iss", subject: "SUB" }),
-		);
-		expect(missed.status).toBe(404);
-	});
-
-	it("returns duplicate createBoundUser conflicts as values", async () => {
-		const s = freshStub();
-		await s.createUser("carol");
-		expect(await s.createBoundUser("carol", "i1", "s1")).toMatchObject({
-			ok: false,
+		expect(first).toEqual({
+			status: 200,
+			body: { transaction_id: tx?.id, from_balance: 30 },
 		});
-		await s.createBoundUser("dave", "i2", "s2");
-		expect(await s.createBoundUser("erin", "i2", "s2")).toMatchObject({
-			ok: false,
-		});
-	});
-
-	it("internalTransfer resolves both identities and commits mutation + record in one section", async () => {
-		const s = freshStub();
-		await s.createBoundUser("alice", "iss", "a-sub");
-		await s.createBoundUser("bob", "iss", "b-sub");
-		await s.issueToken(ADMIN, { amount: 50 });
-		await s.distributeToken(ADMIN, {
-			toUserId: rehydrate.userId("alice"),
-			amount: 50,
-		});
-
-		const input = {
-			from: { issuer: "iss", subject: "a-sub" },
-			to: { issuer: "iss", subject: "b-sub" },
-			amount: 20,
-		};
-		const first = await runInDurableObject(s, async (i) =>
-			i.internalTransfer(DISCORD, idempotency("k1"), input),
-		);
-		expect(first.status).toBe(200);
-		expect(first.body).toMatchObject({ from_balance: 30 });
-
-		// The resolved internal user is the persisted actor — resolution
-		// happened inside the mutation's serialized section, not before.
-		const ops = await s.listOperations();
-		expect(ops.at(-1)).toMatchObject({
-			kind: "P2P_TRANSFER",
-			actor_kind: "user",
-			actor_id: "alice",
-		});
-
-		// The replay record committed atomically with the mutation.
-		await runInDurableObject(s, async (_i, state) => {
-			const row = state.storage.sql
-				.exec("SELECT * FROM idempotency_records")
-				.one();
-			expect(row["service_principal"]).toBe("discord-adapter");
-			expect(row["idempotency_key"]).toBe("k1");
-			expect(row["fingerprint_version"]).toBe("v1");
-			expect(row["request_fingerprint"]).toBe("fp-k1");
-			expect(JSON.parse(row["stored_result"] as string)).toMatchObject({
-				status: 200,
-			});
-		});
-
-		// Matching replay returns the stored descriptor verbatim without
-		// re-executing the mutation.
-		const replay = await runInDurableObject(s, async (i) =>
-			i.internalTransfer(DISCORD, idempotency("k1"), input),
-		);
 		expect(replay).toEqual(first);
-		expect(await s.listOperations()).toHaveLength(ops.length);
-
-		// Same key, different fingerprint → 409 conflict, nothing executed.
-		const conflict = await runInDurableObject(s, async (i) =>
-			i.internalTransfer(DISCORD, idempotency("k1", "other"), input),
-		);
-		expect(conflict.status).toBe(409);
-		expect(conflict.body).toMatchObject({
-			error: "idempotency_key_reuse",
-		});
-		expect(await s.listOperations()).toHaveLength(ops.length);
+		expect(await count(s, "transactions")).toBe(2);
 	});
 
-	it("leaves no idempotency record when the protected mutation does not commit", async () => {
+	it("leaves no replay record when the protected TRANSFER does not commit", async () => {
 		const s = freshStub();
-		await s.createBoundUser("alice", "iss", "a-sub");
-		const failed = await runInDurableObject(s, async (i) =>
-			i.internalTransfer(DISCORD, idempotency("k2"), {
-				from: { issuer: "iss", subject: "a-sub" },
-				to: { issuer: "iss", subject: "nobody" },
-				amount: 1,
-			}),
+		await seedIdentity(s, identity("alice"));
+		await seedIdentity(s, identity("bob"));
+		const records = await count(s, "idempotency_records");
+
+		const response = await rpc(s).internalTransfer(
+			DISCORD_ADAPTER_CALLER,
+			idempotency(),
+			{ from: identity("alice"), to: identity("bob"), amount: 1 },
 		);
-		expect(failed.status).toBe(404);
-		expect(failed.body).toMatchObject({ error: "recipient_not_bound" });
-		await runInDurableObject(s, async (_i, state) => {
-			const row = state.storage.sql
-				.exec("SELECT COUNT(*) AS n FROM idempotency_records")
-				.one();
-			expect(row["n"]).toBe(0);
+
+		expect(response).toMatchObject({
+			status: 422,
+			body: { error: "insufficient_balance" },
 		});
+		expect(await count(s, "idempotency_records")).toBe(records);
+		expect(await count(s, "transactions")).toBe(0);
 	});
 
-	it("admin route methods require the admin-api principal and expose treasury reads", async () => {
+	it("rejects issuance that would overflow total supply as 422 overflow", async () => {
 		const s = freshStub();
-		const denied = await runInDurableObject(s, async (i) =>
-			i.adminIssue(DISCORD, { amount: 5 }),
-		);
-		expect(denied.status).toBe(403);
+		await seedIdentity(s, identity("alice"));
+		await seedIdentity(s, identity("bob"));
+		await fund(s, identity("alice"), MAX);
 
-		const issued = await runInDurableObject(s, async (i) =>
-			i.adminIssue(ADMIN_PRINCIPAL, { amount: 5, metadata: "m" }),
-		);
-		expect(issued.status).toBe(200);
-		expect(issued.body).toMatchObject({
-			operation_id: expect.any(String),
+		const response = await rpc(s).adminIssue(ADMIN_API_CALLER, idempotency(), {
+			target: identity("bob"),
+			amount: 1,
 		});
 
-		const balance = await runInDurableObject(s, async (i) =>
-			i.adminTreasuryBalance(ADMIN_PRINCIPAL),
-		);
-		expect(balance).toEqual({ status: 200, body: { balance: 5 } });
-
-		const history = await runInDurableObject(s, async (i) =>
-			i.adminTreasuryHistory(ADMIN_PRINCIPAL, {}),
-		);
-		expect(history.status).toBe(200);
-		expect(history.body).toMatchObject({
-			operations: [{ kind: "TOKEN_ISSUANCE", metadata: "m" }],
-			next_cursor: null,
+		expect(response).toMatchObject({
+			status: 422,
+			body: { error: "overflow" },
 		});
-	});
-});
-
-describe("identity_bindings / idempotency_records append-only", () => {
-	it("rejects updates and deletes on both new tables", async () => {
-		const s = freshStub();
-		await s.createBoundUser("alice", "iss", "sub");
-		await runInDurableObject(s, async (_i, state) => {
-			state.storage.sql.exec(
-				"INSERT INTO idempotency_records (service_principal, idempotency_key, fingerprint_version, request_fingerprint, stored_result, created_at) VALUES ('discord-adapter', 'k', 'v1', 'f', '{}', 1)",
-			);
-		});
-		for (const sql of [
-			"UPDATE identity_bindings SET user_id = 'x'",
-			"DELETE FROM identity_bindings",
-			"UPDATE idempotency_records SET stored_result = 'x'",
-			"DELETE FROM idempotency_records",
-		]) {
-			await expect(
-				runInDurableObject(s, async (_i, state) => {
-					state.storage.sql.exec(sql);
-				}),
-			).rejects.toThrow();
-		}
+		const [supply] = await query<{ total: number }>(
+			s,
+			"SELECT SUM(balance) AS total FROM accounts",
+		);
+		expect(supply?.total).toBe(MAX);
 	});
 });

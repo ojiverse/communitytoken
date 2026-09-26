@@ -1,14 +1,10 @@
-export {
-	type EconomicHarness,
-	type HarnessCommand,
-	type HarnessFactory,
-	type HarnessResult,
-	type LedgerView,
-	type OperationKind,
-	type OperationView,
-	type RejectionCode,
-	TREASURY_REF,
-	userRef,
-	type WalletRef,
+export type {
+	EconomicHarness,
+	HarnessCommand,
+	HarnessFactory,
+	HarnessResult,
+	RejectionCode,
+	TransactionKind,
+	TransactionView,
 } from "./harness";
 export { defineEconomicContract } from "./suite";

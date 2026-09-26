@@ -3,219 +3,243 @@
  * they make the contract executable without a runtime while keeping the
  * same boundary discipline the production adapters must honor —
  * repositories exist only inside `transact`, ids are allocated by the
- * repository, promise-returning work is rejected, and a section commits
- * all-or-nothing.
+ * repository, promise-returning work is rejected, a section commits
+ * all-or-nothing, and the structural constraints the production schema
+ * enforces (Account owner exists, default designation owned by its
+ * Principal, append-only history) are enforced here too.
  */
 
-import {
-	type CommunityTokenApplication,
-	createCommunityTokenApplication,
-} from "../src/application";
 import type {
+	AccountRepository,
+	AdministrativeIssuerRepository,
 	Clock,
+	DefaultAccountRepository,
 	IdempotencyRepository,
 	IdentityBindingRepository,
-	LedgerRepository,
-	OperationRepository,
+	PrincipalRepository,
 	RegistrationIntentRepository,
 	Synchronous,
 	TransactionContext,
+	TransactionRepository,
 	TransactionScope,
 	UnitOfWork,
-	UserRepository,
-	WalletRepository,
 } from "../src/ports";
 import {
-	type HistoryRow,
+	type Account,
+	type AccountId,
+	type ExternalIdentity,
 	type IdempotencyRecord,
-	type LedgerRecord,
-	ledgerId,
-	type OperationRecord,
-	operationId,
 	type Page,
-	persistedActor,
-	persistedActorOf,
+	type PrincipalId,
+	type PrincipalRecord,
 	type RegistrationIntent,
 	type RegistrationIntentId,
-	registrationIntentId,
-	type UserId,
-	type UserRecord,
-	userId,
-	type Wallet,
-	type WalletId,
-	walletId,
+	rehydrate,
+	type TransactionRecord,
 } from "../src/types";
-import { TREASURY_ID } from "../src/use-cases/shared";
 
-type StoredOperation = {
+type StoredTransaction = {
 	readonly rowid: number;
-	readonly record: OperationRecord;
+	readonly record: TransactionRecord;
 };
-type StoredLedger = { readonly rowid: number; readonly record: LedgerRecord };
 
 /**
  * The mutable state behind an in-memory `UnitOfWork`. `identityBindings`
  * keys an exact `(issuer, subject)` pair and `idempotencyRecords` keys a
- * `(servicePrincipal, idempotencyKey)` pair — both encoded as
+ * `(technicalCaller, idempotencyKey)` pair — both encoded as
  * `JSON.stringify([a, b])` so no separator can collide with content.
  */
 export type InMemoryState = {
-	wallets: Map<WalletId, Wallet>;
-	operationRows: StoredOperation[];
-	ledgerRows: StoredLedger[];
-	identityBindings: Map<string, UserId>;
+	principals: Map<PrincipalId, PrincipalRecord>;
+	accounts: Map<AccountId, Account>;
+	defaultAccounts: Map<PrincipalId, AccountId>;
+	transactionRows: StoredTransaction[];
+	identityBindings: Map<string, PrincipalId>;
+	administrativeIssuer: PrincipalId | null;
 	idempotencyRecords: Map<string, IdempotencyRecord>;
-	users: Map<UserId, UserRecord>;
 	registrationIntents: Map<RegistrationIntentId, RegistrationIntent>;
 	nextId: number;
 	nextRowid: number;
 };
 
-/** A fresh community: the treasury wallet and nothing else. */
+/** An empty community: no Principals, Accounts, or Transactions. */
 export function createInMemoryState(): InMemoryState {
-	const state: InMemoryState = {
-		wallets: new Map(),
-		operationRows: [],
-		ledgerRows: [],
+	return {
+		principals: new Map(),
+		accounts: new Map(),
+		defaultAccounts: new Map(),
+		transactionRows: [],
 		identityBindings: new Map(),
+		administrativeIssuer: null,
 		idempotencyRecords: new Map(),
-		users: new Map(),
 		registrationIntents: new Map(),
 		nextId: 0,
 		nextRowid: 0,
 	};
-	// Stored records are frozen: a value handed out by a repository can
-	// never alias-mutate storage state — updates only happen through
-	// repository mutation methods, which store fresh frozen records.
-	const treasury: Wallet = {
-		id: TREASURY_ID,
-		kind: "system",
-		ownerUserId: null,
-		balance: 0,
-		createdAt: 0,
-		updatedAt: 0,
-	};
-	state.wallets.set(TREASURY_ID, Object.freeze(treasury));
-	return state;
 }
 
-function walletRepository(state: InMemoryState): WalletRepository {
+function bindingKey(issuer: string, subject: string): string {
+	return JSON.stringify([issuer, subject]);
+}
+
+function principalRepository(state: InMemoryState): PrincipalRepository {
 	return {
 		findById(id) {
-			return state.wallets.get(id);
+			return state.principals.get(id);
 		},
-		findByOwnerUserId(owner) {
-			for (const wallet of state.wallets.values()) {
-				if (wallet.kind === "user" && wallet.ownerUserId === owner) {
-					return wallet;
-				}
+		insert(record) {
+			const principal: PrincipalRecord = Object.freeze({
+				id: rehydrate.principalId(`principal-${++state.nextId}`),
+				createdAt: record.createdAt,
+			});
+			state.principals.set(principal.id, principal);
+			return principal;
+		},
+	};
+}
+
+function accountRepository(state: InMemoryState): AccountRepository {
+	return {
+		findById(id) {
+			return state.accounts.get(id);
+		},
+		insert(record) {
+			if (!state.principals.has(record.ownerPrincipalId)) {
+				throw new Error(
+					`account owner principal not found: ${record.ownerPrincipalId}`,
+				);
 			}
-			return undefined;
-		},
-		setBalance(id, balance, updatedAt) {
-			const wallet = state.wallets.get(id);
-			if (wallet === undefined) {
-				throw new Error(`setBalance on missing wallet: ${id}`);
-			}
-			state.wallets.set(id, Object.freeze({ ...wallet, balance, updatedAt }));
-		},
-		insertUserWallet(record) {
-			const wallet: Wallet = {
-				id: walletId(`wallet-${++state.nextId}`),
-				kind: "user",
-				ownerUserId: record.ownerUserId,
+			const account: Account = Object.freeze({
+				id: rehydrate.accountId(`account-${++state.nextId}`),
+				ownerPrincipalId: record.ownerPrincipalId,
 				balance: 0,
 				createdAt: record.createdAt,
 				updatedAt: record.createdAt,
-			};
-			if (this.findByOwnerUserId(record.ownerUserId) !== undefined) {
-				throw new Error(`user already owns a wallet: ${record.ownerUserId}`);
+			});
+			state.accounts.set(account.id, account);
+			return account;
+		},
+		setBalance(id, balance, updatedAt) {
+			const account = state.accounts.get(id);
+			if (account === undefined) {
+				throw new Error(`setBalance on missing account: ${id}`);
 			}
-			state.wallets.set(wallet.id, Object.freeze(wallet));
-			return wallet;
+			if (
+				!Number.isSafeInteger(balance) ||
+				balance < 0 ||
+				balance > Number.MAX_SAFE_INTEGER
+			) {
+				throw new Error(`balance outside the monetary domain: ${balance}`);
+			}
+			state.accounts.set(id, Object.freeze({ ...account, balance, updatedAt }));
 		},
 		totalSupply() {
 			let total = 0;
-			for (const wallet of state.wallets.values()) total += wallet.balance;
+			for (const account of state.accounts.values()) total += account.balance;
 			return total;
 		},
 	};
 }
 
-function operationRepository(state: InMemoryState): OperationRepository {
+function defaultAccountRepository(
+	state: InMemoryState,
+): DefaultAccountRepository {
 	return {
-		insert(record) {
-			const stored: OperationRecord = Object.freeze({
-				id: operationId(`op-${++state.nextId}`),
-				kind: record.kind,
-				metadata: record.metadata,
-				createdAt: record.createdAt,
-				...persistedActor(record.actor),
-			});
-			state.operationRows.push({ rowid: ++state.nextRowid, record: stored });
-			return stored;
+		findAccountId(principalId) {
+			return state.defaultAccounts.get(principalId);
 		},
-		listForWallet(id, cursor, limit) {
-			type JoinedRow = HistoryRow & { readonly rowid: number };
-			const joined: JoinedRow[] = [];
-			for (const { rowid, record: entry } of state.ledgerRows) {
-				if (entry.fromWalletId !== id && entry.toWalletId !== id) {
-					continue;
-				}
-				const operation = state.operationRows.find(
-					(o) => o.record.id === entry.operationId,
-				);
-				if (operation === undefined) {
-					throw new Error(`ledger entry ${entry.id} has no operation`);
-				}
-				joined.push({
-					rowid,
-					id: operation.record.id,
-					kind: operation.record.kind,
-					amount: entry.amount,
-					fromWalletId: entry.fromWalletId,
-					fromOwnerUserId:
-						state.wallets.get(entry.fromWalletId)?.ownerUserId ?? null,
-					toWalletId: entry.toWalletId,
-					toOwnerUserId:
-						state.wallets.get(entry.toWalletId)?.ownerUserId ?? null,
-					metadata: operation.record.metadata,
-					createdAt: operation.record.createdAt,
-					...persistedActorOf(operation.record),
-				});
+		designate({ principalId, accountId }) {
+			if (state.defaultAccounts.has(principalId)) {
+				throw new Error(`principal already has a default: ${principalId}`);
 			}
-			joined.sort((a, b) => b.rowid - a.rowid);
-			const remaining =
-				cursor === null
-					? joined
-					: joined.filter((row) => row.rowid < Number(cursor));
-			const pageRows = remaining.slice(0, limit);
-			const nextCursor =
-				remaining.length > pageRows.length
-					? String(pageRows.at(-1)?.rowid)
-					: null;
-			const page: Page<HistoryRow> = {
-				entries: pageRows.map(({ rowid: _rowid, ...rest }) => rest),
-				nextCursor,
-			};
-			return page;
+			const account = state.accounts.get(accountId);
+			if (account === undefined || account.ownerPrincipalId !== principalId) {
+				throw new Error(
+					`account ${accountId} is not owned by principal ${principalId}`,
+				);
+			}
+			for (const designated of state.defaultAccounts.values()) {
+				if (designated === accountId) {
+					throw new Error(`account already designated: ${accountId}`);
+				}
+			}
+			state.defaultAccounts.set(principalId, accountId);
 		},
 	};
 }
 
-function ledgerRepository(state: InMemoryState): LedgerRepository {
+function transactionRepository(state: InMemoryState): TransactionRepository {
 	return {
-		insert(entry) {
-			const stored: LedgerRecord = Object.freeze({
-				id: ledgerId(`tx-${++state.nextId}`),
-				operationId: entry.operationId,
-				fromWalletId: entry.fromWalletId,
-				toWalletId: entry.toWalletId,
-				amount: entry.amount,
-				createdAt: entry.createdAt,
-			});
-			state.ledgerRows.push({ rowid: ++state.nextRowid, record: stored });
+		insert(record) {
+			if (!state.accounts.has(record.destinationAccountId)) {
+				throw new Error(
+					`destination account not found: ${record.destinationAccountId}`,
+				);
+			}
+			if (
+				!Number.isSafeInteger(record.amount) ||
+				record.amount < 1 ||
+				record.amount > Number.MAX_SAFE_INTEGER
+			) {
+				throw new Error(`amount outside the monetary domain: ${record.amount}`);
+			}
+			const id = rehydrate.transactionId(`tx-${++state.nextId}`);
+			let stored: TransactionRecord;
+			if (record.kind === "ISSUE") {
+				if (!state.principals.has(record.issuerPrincipalId)) {
+					throw new Error(
+						`issuer principal not found: ${record.issuerPrincipalId}`,
+					);
+				}
+				stored = Object.freeze({
+					id,
+					kind: "ISSUE",
+					issuerPrincipalId: record.issuerPrincipalId,
+					sourceAccountId: null,
+					destinationAccountId: record.destinationAccountId,
+					amount: record.amount,
+					committedAt: record.committedAt,
+				});
+			} else {
+				if (!state.accounts.has(record.sourceAccountId)) {
+					throw new Error(
+						`source account not found: ${record.sourceAccountId}`,
+					);
+				}
+				stored = Object.freeze({
+					id,
+					kind: "TRANSFER",
+					issuerPrincipalId: null,
+					sourceAccountId: record.sourceAccountId,
+					destinationAccountId: record.destinationAccountId,
+					amount: record.amount,
+					committedAt: record.committedAt,
+				});
+			}
+			state.transactionRows.push({ rowid: ++state.nextRowid, record: stored });
 			return stored;
+		},
+		listForAccount(accountId, cursor, limit) {
+			const matching = state.transactionRows
+				.filter(
+					({ record }) =>
+						record.sourceAccountId === accountId ||
+						record.destinationAccountId === accountId,
+				)
+				.sort((a, b) => b.rowid - a.rowid);
+			const remaining =
+				cursor === null
+					? matching
+					: matching.filter((row) => row.rowid < Number(cursor));
+			const pageRows = remaining.slice(0, limit);
+			const page: Page<TransactionRecord> = {
+				entries: pageRows.map((row) => row.record),
+				nextCursor:
+					remaining.length > pageRows.length
+						? String(pageRows.at(-1)?.rowid)
+						: null,
+			};
+			return page;
 		},
 	};
 }
@@ -224,39 +248,56 @@ function identityBindingRepository(
 	state: InMemoryState,
 ): IdentityBindingRepository {
 	return {
-		findUserIdByExternal(issuer, subject) {
-			return state.identityBindings.get(JSON.stringify([issuer, subject]));
+		findPrincipalIdByExternal(issuer, subject) {
+			return state.identityBindings.get(bindingKey(issuer, subject));
+		},
+		listSubjects(principalId, issuer) {
+			const subjects: string[] = [];
+			for (const [key, bound] of state.identityBindings) {
+				const [boundIssuer, subject] = JSON.parse(key) as [string, string];
+				if (bound === principalId && boundIssuer === issuer) {
+					subjects.push(subject);
+				}
+			}
+			return subjects;
 		},
 		insert(binding) {
-			const key = JSON.stringify([binding.issuer, binding.subject]);
+			const key = bindingKey(binding.issuer, binding.subject);
 			if (state.identityBindings.has(key)) {
 				throw new Error(
 					`identity already bound: ${binding.issuer}:${binding.subject}`,
 				);
 			}
-			state.identityBindings.set(key, binding.userId);
+			if (!state.principals.has(binding.principalId)) {
+				throw new Error(`binding principal not found: ${binding.principalId}`);
+			}
+			state.identityBindings.set(key, binding.principalId);
 		},
 	};
 }
 
-function userRepository(state: InMemoryState): UserRepository {
+function administrativeIssuerRepository(
+	state: InMemoryState,
+): AdministrativeIssuerRepository {
 	return {
-		insert(record) {
-			const user: UserRecord = Object.freeze({
-				id: userId(`user-${++state.nextId}`),
-				createdAt: record.createdAt,
-			});
-			state.users.set(user.id, user);
-			return user;
+		find() {
+			return state.administrativeIssuer ?? undefined;
+		},
+		insert(principalId) {
+			if (state.administrativeIssuer !== null) {
+				throw new Error("administrative issuer already set");
+			}
+			if (!state.principals.has(principalId)) {
+				throw new Error(`issuer principal not found: ${principalId}`);
+			}
+			state.administrativeIssuer = principalId;
 		},
 	};
 }
 
 /**
  * In-memory RegistrationIntent storage with the same lifecycle floor the
- * production triggers enforce: only `active -> consumed` /
- * `active -> superseded` transitions exist, and `supersedeActive` covers
- * every status-active row of the pair, expired or not.
+ * production triggers enforce.
  */
 function registrationIntentRepository(
 	state: InMemoryState,
@@ -301,7 +342,7 @@ function registrationIntentRepository(
 				}
 			}
 			const intent: RegistrationIntent = Object.freeze({
-				id: registrationIntentId(`intent-${++state.nextId}`),
+				id: rehydrate.registrationIntentId(`intent-${++state.nextId}`),
 				...record,
 				status: "active",
 				consumedAt: null,
@@ -328,22 +369,20 @@ function registrationIntentRepository(
 }
 
 function idempotencyRepository(state: InMemoryState): IdempotencyRepository {
-	const key = (principal: string, idempotencyKey: string) =>
-		JSON.stringify([principal, idempotencyKey]);
 	return {
-		find(servicePrincipal, idempotencyKey) {
+		find(technicalCaller, idempotencyKey) {
 			return state.idempotencyRecords.get(
-				key(servicePrincipal, idempotencyKey),
+				bindingKey(technicalCaller, idempotencyKey),
 			);
 		},
 		insert(record) {
-			const k = key(record.servicePrincipal, record.idempotencyKey);
+			const k = bindingKey(record.technicalCaller, record.idempotencyKey);
 			if (state.idempotencyRecords.has(k)) {
 				throw new Error(
-					`duplicate idempotency record: ${record.servicePrincipal}/${record.idempotencyKey}`,
+					`duplicate idempotency record: ${record.technicalCaller}/${record.idempotencyKey}`,
 				);
 			}
-			state.idempotencyRecords.set(k, Object.freeze(record));
+			state.idempotencyRecords.set(k, Object.freeze({ ...record }));
 		},
 	};
 }
@@ -366,18 +405,17 @@ function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
 
 /**
  * Copies the stores a section can write. Stored records are frozen at
- * write time, so copying the containers is a faithful snapshot: a write
- * inside the section replaces a map entry or appends a row, and a record
- * handed out by a repository method can never alias-mutate storage.
+ * write time, so copying the containers is a faithful snapshot.
  */
 function cloneState(state: InMemoryState): InMemoryState {
 	return {
-		wallets: new Map(state.wallets),
-		operationRows: [...state.operationRows],
-		ledgerRows: [...state.ledgerRows],
+		principals: new Map(state.principals),
+		accounts: new Map(state.accounts),
+		defaultAccounts: new Map(state.defaultAccounts),
+		transactionRows: [...state.transactionRows],
 		identityBindings: new Map(state.identityBindings),
+		administrativeIssuer: state.administrativeIssuer,
 		idempotencyRecords: new Map(state.idempotencyRecords),
-		users: new Map(state.users),
 		registrationIntents: new Map(state.registrationIntents),
 		nextId: state.nextId,
 		nextRowid: state.nextRowid,
@@ -385,21 +423,13 @@ function cloneState(state: InMemoryState): InMemoryState {
 }
 
 function commitState(target: InMemoryState, staging: InMemoryState): void {
-	target.wallets = staging.wallets;
-	target.operationRows = staging.operationRows;
-	target.ledgerRows = staging.ledgerRows;
-	target.identityBindings = staging.identityBindings;
-	target.idempotencyRecords = staging.idempotencyRecords;
-	target.users = staging.users;
-	target.registrationIntents = staging.registrationIntents;
-	target.nextId = staging.nextId;
-	target.nextRowid = staging.nextRowid;
+	Object.assign(target, staging);
 }
 
 export type InMemoryUnitOfWorkOptions = {
 	/**
 	 * Fault-injection seam: transforms the section's repository scope before
-	 * `work` runs — for example wrapping `operations.insert` to throw
+	 * `work` runs — for example wrapping `transactions.insert` to throw
 	 * mid-section. Applied to every section this `UnitOfWork` opens.
 	 */
 	readonly wrapScope?:
@@ -409,9 +439,7 @@ export type InMemoryUnitOfWorkOptions = {
 
 /**
  * Binds a repository to the section's open/closed lifetime: every method
- * asserts the section is still open before delegating, so a repository
- * handle that escapes its `transact` callback can neither read nor mutate
- * state after the section closes — whether it committed or rolled back.
+ * asserts the section is still open before delegating.
  */
 function guardRepository<T extends object>(
 	repository: T,
@@ -431,12 +459,7 @@ function guardRepository<T extends object>(
 
 /**
  * Binds the `TransactionContext` itself to the section's lifetime — the
- * same semantics the production adapter enforces: every property trap
- * asserts the section is still open, so a context captured outside
- * `transact` is permanently unusable. Reading `nowMs` or a repository
- * slot throws exactly like calling a revoked repository method, whether
- * the section committed or rolled back, and a later section never revives
- * a stale context.
+ * same semantics the production adapter enforces.
  */
 function guardContext(
 	ctx: TransactionContext,
@@ -476,16 +499,10 @@ function guardContext(
 
 /**
  * An in-memory `UnitOfWork` faithful to the atomic boundary it models:
- * entering a section samples the `Clock` exactly once and freezes the value
- * as `ctx.nowMs` (the temporal-authority specification); `work` runs against a staging copy of the
- * state that replaces the committed state only when `work` returns a
- * non-Promise result — a throw, including the runtime PromiseLike check,
- * discards the staging copy, so no observable state change survives an
- * aborted section. The `TransactionContext` itself and the repository
- * handles bound to it are revoked when the section closes — reading a
- * property of a closed context throws, exactly like the production
- * adapter — and sections do not nest: composing work shares the open
- * `TransactionContext`.
+ * entering a section samples the `Clock` exactly once; `work` runs against
+ * a staging copy that replaces the committed state only when `work` returns
+ * a non-Promise result; the context and its repositories are revoked when
+ * the section closes; sections do not nest.
  */
 export function createInMemoryUnitOfWork(
 	state: InMemoryState,
@@ -501,10 +518,6 @@ export function createInMemoryUnitOfWork(
 				);
 			}
 			active = true;
-			// Each section gets its own lifetime predicate: a context or
-			// repository handle from a previous section stays permanently
-			// dead even while a later section is open — `active` only guards
-			// against nesting, it never revives a stale handle.
 			let sectionOpen = true;
 			function assertOpen() {
 				if (!sectionOpen) {
@@ -514,33 +527,39 @@ export function createInMemoryUnitOfWork(
 			try {
 				const staging = cloneState(state);
 				const scope: TransactionScope = {
-					wallets: walletRepository(staging),
-					operations: operationRepository(staging),
-					ledger: ledgerRepository(staging),
+					principals: principalRepository(staging),
+					accounts: accountRepository(staging),
+					defaultAccounts: defaultAccountRepository(staging),
+					transactions: transactionRepository(staging),
 					identityBindings: identityBindingRepository(staging),
+					administrativeIssuer: administrativeIssuerRepository(staging),
 					idempotencyRecords: idempotencyRepository(staging),
-					users: userRepository(staging),
 					registrationIntents: registrationIntentRepository(staging),
 				};
 				const wrapped = options?.wrapScope?.(scope) ?? scope;
-				// Per the temporal-authority specification: exactly one clock sample per section, taken before any
-				// caller code runs.
 				const nowMs = clock.nowMs();
 				const ctx = guardContext(
 					{
 						nowMs,
-						wallets: guardRepository(wrapped.wallets, assertOpen),
-						operations: guardRepository(wrapped.operations, assertOpen),
-						ledger: guardRepository(wrapped.ledger, assertOpen),
+						principals: guardRepository(wrapped.principals, assertOpen),
+						accounts: guardRepository(wrapped.accounts, assertOpen),
+						defaultAccounts: guardRepository(
+							wrapped.defaultAccounts,
+							assertOpen,
+						),
+						transactions: guardRepository(wrapped.transactions, assertOpen),
 						identityBindings: guardRepository(
 							wrapped.identityBindings,
+							assertOpen,
+						),
+						administrativeIssuer: guardRepository(
+							wrapped.administrativeIssuer,
 							assertOpen,
 						),
 						idempotencyRecords: guardRepository(
 							wrapped.idempotencyRecords,
 							assertOpen,
 						),
-						users: guardRepository(wrapped.users, assertOpen),
 						registrationIntents: guardRepository(
 							wrapped.registrationIntents,
 							assertOpen,
@@ -593,46 +612,92 @@ export function fixedClock(nowMs: number): Clock {
 	};
 }
 
+/** A registered identity seeded directly into state. */
+export type SeededIdentity = {
+	readonly identity: ExternalIdentity;
+	readonly principalId: PrincipalId;
+	readonly accountId: AccountId;
+};
+
+/** The default test issuer of seeded identities. */
+export const TEST_ISSUER = "https://issuer.test";
+
 /**
- * A ready-to-use in-memory application plus the fixture handles tests need:
- * `seedUser` creates the user's wallet (registration is not an economic
- * concern and is owned by a later PR), and `state` exposes the raw stores
- * for assertions.
+ * A ready-to-use in-memory environment plus the fixture handles tests need.
+ * The administrative issuer Principal is pre-seeded (initialization is
+ * covered separately), and `seedIdentity` writes the state registration
+ * produces — Principal, zero-balance Account, default designation, and
+ * binding — directly, without sampling the clock.
  */
 export function createInMemoryFixture(options?: {
 	readonly clock?: Clock;
 	readonly wrapScope?: (scope: TransactionScope) => TransactionScope;
 }): {
-	readonly app: CommunityTokenApplication;
 	readonly state: InMemoryState;
 	readonly clock: Clock;
 	readonly uow: UnitOfWork;
-	seedUser(rawUserId: string): Wallet;
+	readonly adminIssuer: PrincipalId;
+	seedPrincipal(): PrincipalId;
+	seedAccount(owner: PrincipalId, balance?: number): AccountId;
+	seedIdentity(subject: string, issuer?: string): SeededIdentity;
+	bind(principal: PrincipalId, subject: string, issuer?: string): void;
+	balanceOf(account: AccountId): number | undefined;
 } {
 	const state = createInMemoryState();
 	const clock = options?.clock ?? stepClock();
 	const uow = createInMemoryUnitOfWork(state, clock, {
 		wrapScope: options?.wrapScope,
 	});
-	const app = createCommunityTokenApplication({ uow });
-	function seedUser(rawUserId: string): Wallet {
-		const owner = userId(rawUserId);
-		for (const wallet of state.wallets.values()) {
-			if (wallet.ownerUserId === owner) {
-				throw new Error(`user already seeded: ${rawUserId}`);
-			}
-		}
-		state.users.set(owner, Object.freeze({ id: owner, createdAt: 0 }));
-		const wallet: Wallet = {
-			id: walletId(`wallet-${++state.nextId}`),
-			kind: "user",
-			ownerUserId: owner,
-			balance: 0,
-			createdAt: 0,
-			updatedAt: 0,
-		};
-		state.wallets.set(wallet.id, Object.freeze(wallet));
-		return wallet;
+	function seedPrincipal(): PrincipalId {
+		const id = rehydrate.principalId(`principal-${++state.nextId}`);
+		state.principals.set(id, Object.freeze({ id, createdAt: 0 }));
+		return id;
 	}
-	return { app, state, clock, uow, seedUser };
+	function seedAccount(owner: PrincipalId, balance = 0): AccountId {
+		const id = rehydrate.accountId(`account-${++state.nextId}`);
+		state.accounts.set(
+			id,
+			Object.freeze({
+				id,
+				ownerPrincipalId: owner,
+				balance,
+				createdAt: 0,
+				updatedAt: 0,
+			}),
+		);
+		return id;
+	}
+	function bind(
+		principal: PrincipalId,
+		subject: string,
+		issuer = TEST_ISSUER,
+	): void {
+		const key = bindingKey(issuer, subject);
+		if (state.identityBindings.has(key)) {
+			throw new Error(`identity already seeded: ${issuer}:${subject}`);
+		}
+		state.identityBindings.set(key, principal);
+	}
+	function seedIdentity(subject: string, issuer = TEST_ISSUER): SeededIdentity {
+		const principalId = seedPrincipal();
+		const accountId = seedAccount(principalId);
+		state.defaultAccounts.set(principalId, accountId);
+		bind(principalId, subject, issuer);
+		return { identity: { issuer, subject }, principalId, accountId };
+	}
+	const adminIssuer = seedPrincipal();
+	state.administrativeIssuer = adminIssuer;
+	return {
+		state,
+		clock,
+		uow,
+		adminIssuer,
+		seedPrincipal,
+		seedAccount,
+		seedIdentity,
+		bind,
+		balanceOf(account) {
+			return state.accounts.get(account)?.balance;
+		},
+	};
 }

@@ -37,7 +37,7 @@ export type CreateRegistrationIntentOutcome =
 
 /**
  * Creates a registration intent inside the caller's already-open section
- * (issue #4 PR-4, the registration specification). The order is fixed:
+ * (the registration specification). The order is fixed:
  *
  *   binding lookup
  *   -> if bound: alreadyRegistered, no mutation
@@ -53,7 +53,7 @@ export function createRegistrationIntent(
 	ctx: TransactionContext,
 	input: CreateRegistrationIntentInput,
 ): CreateRegistrationIntentOutcome {
-	const bound = ctx.identityBindings.findUserIdByExternal(
+	const bound = ctx.identityBindings.findPrincipalIdByExternal(
 		input.expectedIssuer,
 		input.expectedSubject,
 	);

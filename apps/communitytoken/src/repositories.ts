@@ -6,237 +6,258 @@
  *
  * Records returned to callers are frozen storage-owned snapshots: a row
  * object handed out by a repository can never alias-mutate durable state,
- * which only changes through repository mutation methods.
+ * which only changes through repository mutation methods. Identifiers are
+ * allocated here with `crypto.randomUUID()`.
  */
 
-import type {
-	IdempotencyRepository,
-	IdentityBindingRepository,
-	LedgerRepository,
-	OperationRepository,
-	RegistrationIntentRepository,
-	UserRepository,
-	WalletRepository,
-} from "@communitytoken/application";
 import {
-	type HistoryRow,
+	type Account,
+	type AccountRepository,
+	type AdministrativeIssuerRepository,
+	type DefaultAccountRepository,
 	type IdempotencyRecord,
-	type OperationRecord,
+	type IdempotencyRepository,
+	type IdentityBindingRepository,
 	type Page,
-	type PersistedActor,
-	persistedActor,
+	type PrincipalRepository,
 	type RegistrationIntent,
+	type RegistrationIntentRepository,
 	type RegistrationIntentStatus,
 	rehydrate,
-	type UserWallet,
-	type Wallet,
+	type TransactionRecord,
+	type TransactionRepository,
 } from "@communitytoken/application";
-import type { OperationKind } from "@communitytoken/economic-kernel";
 
-type WalletRow = {
+type AccountRow = {
 	readonly id: string;
-	readonly kind: "system" | "user";
-	readonly owner_user_id: string | null;
+	readonly owner_principal_id: string;
 	readonly balance: number;
 	readonly created_at: number;
 	readonly updated_at: number;
 };
 
-type HistoryJoinRow = {
-	readonly lrowid: number;
-	readonly op_id: string;
-	readonly kind: OperationKind;
-	readonly metadata: string | null;
-	readonly actor_kind: "user" | "service" | "system";
-	readonly actor_id: string | null;
-	readonly op_created_at: number;
-	readonly amount: number;
-	readonly from_wallet_id: string;
-	readonly from_owner: string | null;
-	readonly to_wallet_id: string;
-	readonly to_owner: string | null;
-};
+const ACCOUNT_COLUMNS =
+	"id, owner_principal_id, balance, created_at, updated_at";
 
-const WALLET_COLUMNS =
-	"id, kind, owner_user_id, balance, created_at, updated_at";
-
-/**
- * The operation+ledger join behind `listForWallet`, newest first. The
- * `wallets` joins are LEFT JOINs: owner ids enrich the row for
- * `counterparty` shaping and must not drop a movement whose wallet row
- * somehow lacks an owner side.
- */
-const HISTORY_SQL = `
-SELECT l.rowid AS lrowid,
-       o.id AS op_id, o.kind, o.metadata, o.actor_kind, o.actor_id,
-       o.created_at AS op_created_at,
-       l.amount, l.from_wallet_id, l.to_wallet_id,
-       wf.owner_user_id AS from_owner,
-       wt.owner_user_id AS to_owner
-FROM ledger_transactions l
-JOIN economic_operations o ON o.id = l.operation_id
-LEFT JOIN wallets wf ON wf.id = l.from_wallet_id
-LEFT JOIN wallets wt ON wt.id = l.to_wallet_id
-WHERE (l.from_wallet_id = ? OR l.to_wallet_id = ?)
-`;
-
-function toWallet(row: WalletRow): Wallet {
-	const base = {
-		id: rehydrate.walletId(row.id),
+function toAccount(row: AccountRow): Account {
+	return Object.freeze({
+		id: rehydrate.accountId(row.id),
+		ownerPrincipalId: rehydrate.principalId(row.owner_principal_id),
 		balance: row.balance,
 		createdAt: row.created_at,
 		updatedAt: row.updated_at,
-	};
-	if (row.kind === "system") {
-		return Object.freeze({ ...base, kind: "system", ownerUserId: null });
-	}
-	if (row.owner_user_id === null) {
-		throw new Error(`user wallet ${row.id} has no owner`);
-	}
-	return Object.freeze({
-		...base,
-		kind: "user",
-		ownerUserId: rehydrate.userId(row.owner_user_id),
 	});
 }
 
-function toPersistedActor(
-	actorKind: "user" | "service" | "system",
-	actorId: string | null,
-): PersistedActor {
-	switch (actorKind) {
-		case "user":
-			if (actorId === null) throw new Error("user actor without actor_id");
-			return { actorKind: "user", actorId: rehydrate.userId(actorId) };
-		case "service":
-			if (actorId === null) {
-				throw new Error("service actor without actor_id");
-			}
-			return { actorKind: "service", actorId };
-		case "system":
-			return { actorKind: "system", actorId: null };
-	}
-}
-
-export function createWalletRepository(sql: SqlStorage): WalletRepository {
+export function createPrincipalRepository(
+	sql: SqlStorage,
+): PrincipalRepository {
 	return {
 		findById(id) {
 			const rows = sql
-				.exec(`SELECT ${WALLET_COLUMNS} FROM wallets WHERE id = ?`, id)
-				.toArray() as unknown as WalletRow[];
-			return rows.length === 0 ? undefined : toWallet(rows[0] as WalletRow);
+				.exec("SELECT id, created_at FROM principals WHERE id = ?", id)
+				.toArray() as unknown as { id: string; created_at: number }[];
+			const row = rows[0];
+			return row === undefined
+				? undefined
+				: Object.freeze({
+						id: rehydrate.principalId(row.id),
+						createdAt: row.created_at,
+					});
 		},
-		findByOwnerUserId(owner) {
+		insert(record) {
+			const id = rehydrate.principalId(crypto.randomUUID());
+			sql.exec(
+				"INSERT INTO principals (id, created_at) VALUES (?, ?)",
+				id,
+				record.createdAt,
+			);
+			return Object.freeze({ id, createdAt: record.createdAt });
+		},
+	};
+}
+
+export function createAccountRepository(sql: SqlStorage): AccountRepository {
+	return {
+		findById(id) {
 			const rows = sql
-				.exec(
-					`SELECT ${WALLET_COLUMNS} FROM wallets WHERE owner_user_id = ?`,
-					owner,
-				)
-				.toArray() as unknown as WalletRow[];
-			return rows.length === 0 ? undefined : toWallet(rows[0] as WalletRow);
+				.exec(`SELECT ${ACCOUNT_COLUMNS} FROM accounts WHERE id = ?`, id)
+				.toArray() as unknown as AccountRow[];
+			const row = rows[0];
+			return row === undefined ? undefined : toAccount(row);
+		},
+		insert(record) {
+			const id = crypto.randomUUID();
+			sql.exec(
+				`INSERT INTO accounts (${ACCOUNT_COLUMNS}) VALUES (?, ?, 0, ?, ?)`,
+				id,
+				record.ownerPrincipalId,
+				record.createdAt,
+				record.createdAt,
+			);
+			return toAccount({
+				id,
+				owner_principal_id: record.ownerPrincipalId,
+				balance: 0,
+				created_at: record.createdAt,
+				updated_at: record.createdAt,
+			});
 		},
 		setBalance(id, balance, updatedAt) {
 			const cursor = sql.exec(
-				"UPDATE wallets SET balance = ?, updated_at = ? WHERE id = ?",
+				"UPDATE accounts SET balance = ?, updated_at = ? WHERE id = ?",
 				balance,
 				updatedAt,
 				id,
 			);
 			if (cursor.rowsWritten !== 1) {
-				throw new Error(`setBalance on missing wallet: ${id}`);
+				throw new Error(`setBalance on missing account: ${id}`);
 			}
-		},
-		insertUserWallet(record) {
-			const id = rehydrate.walletId(crypto.randomUUID());
-			sql.exec(
-				"INSERT INTO wallets (id, kind, owner_user_id, balance, created_at, updated_at) VALUES (?, 'user', ?, 0, ?, ?)",
-				id,
-				record.ownerUserId,
-				record.createdAt,
-				record.createdAt,
-			);
-			const stored: UserWallet = {
-				id,
-				kind: "user",
-				ownerUserId: record.ownerUserId,
-				balance: 0,
-				createdAt: record.createdAt,
-				updatedAt: record.createdAt,
-			};
-			return Object.freeze(stored);
 		},
 		totalSupply() {
 			return Number(
 				sql
-					.exec("SELECT COALESCE(SUM(balance), 0) AS total FROM wallets")
+					.exec("SELECT COALESCE(SUM(balance), 0) AS total FROM accounts")
 					.one()["total"],
 			);
 		},
 	};
 }
 
-export function createOperationRepository(
+/**
+ * SQLite-backed default-Account designation: the primary key, composite
+ * foreign key, and unique constraint of `default_accounts` reject a second
+ * designation, a foreign-owned Account, and a doubly-designated Account.
+ */
+export function createDefaultAccountRepository(
 	sql: SqlStorage,
-): OperationRepository {
+): DefaultAccountRepository {
+	return {
+		findAccountId(principalId) {
+			const rows = sql
+				.exec(
+					"SELECT account_id FROM default_accounts WHERE principal_id = ?",
+					principalId,
+				)
+				.toArray() as unknown as { account_id: string }[];
+			const row = rows[0];
+			return row === undefined
+				? undefined
+				: rehydrate.accountId(row.account_id);
+		},
+		designate(designation) {
+			sql.exec(
+				"INSERT INTO default_accounts (principal_id, account_id, created_at) VALUES (?, ?, ?)",
+				designation.principalId,
+				designation.accountId,
+				designation.createdAt,
+			);
+		},
+	};
+}
+
+type TransactionRow = {
+	readonly rowid: number;
+	readonly id: string;
+	readonly kind: "ISSUE" | "TRANSFER";
+	readonly issuer_principal_id: string | null;
+	readonly source_account_id: string | null;
+	readonly destination_account_id: string;
+	readonly amount: number;
+	readonly committed_at: number;
+};
+
+const TRANSACTION_COLUMNS =
+	"rowid, id, kind, issuer_principal_id, source_account_id, destination_account_id, amount, committed_at";
+
+/**
+ * Rehydrates a stored Transaction row, re-checking the kind/shape
+ * correlation the storage CHECK guarantees.
+ * @throws {Error} when a row violates the ISSUE/TRANSFER shape.
+ */
+export function toTransactionRecord(row: TransactionRow): TransactionRecord {
+	const base = {
+		id: rehydrate.transactionId(row.id),
+		destinationAccountId: rehydrate.accountId(row.destination_account_id),
+		amount: row.amount,
+		committedAt: row.committed_at,
+	};
+	if (row.kind === "ISSUE") {
+		if (row.issuer_principal_id === null || row.source_account_id !== null) {
+			throw new Error(`malformed ISSUE row: ${row.id}`);
+		}
+		return Object.freeze({
+			...base,
+			kind: "ISSUE",
+			issuerPrincipalId: rehydrate.principalId(row.issuer_principal_id),
+			sourceAccountId: null,
+		});
+	}
+	if (row.source_account_id === null || row.issuer_principal_id !== null) {
+		throw new Error(`malformed TRANSFER row: ${row.id}`);
+	}
+	return Object.freeze({
+		...base,
+		kind: "TRANSFER",
+		issuerPrincipalId: null,
+		sourceAccountId: rehydrate.accountId(row.source_account_id),
+	});
+}
+
+/**
+ * SQLite-backed immutable Transaction history. The history cursor is the
+ * decimal storage rowid of the last returned row.
+ */
+export function createTransactionRepository(
+	sql: SqlStorage,
+): TransactionRepository {
 	return {
 		insert(record) {
-			const id = rehydrate.operationId(crypto.randomUUID());
-			const actor = persistedActor(record.actor);
+			const id = crypto.randomUUID();
+			const issuer = record.kind === "ISSUE" ? record.issuerPrincipalId : null;
+			const source = record.kind === "TRANSFER" ? record.sourceAccountId : null;
 			sql.exec(
-				"INSERT INTO economic_operations (id, kind, metadata, actor_kind, actor_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+				"INSERT INTO transactions (id, kind, issuer_principal_id, source_account_id, destination_account_id, amount, committed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
 				id,
 				record.kind,
-				record.metadata,
-				actor.actorKind,
-				actor.actorId,
-				record.createdAt,
+				issuer,
+				source,
+				record.destinationAccountId,
+				record.amount,
+				record.committedAt,
 			);
-			const stored: OperationRecord = Object.freeze({
+			return toTransactionRecord({
+				rowid: 0,
 				id,
 				kind: record.kind,
-				metadata: record.metadata,
-				createdAt: record.createdAt,
-				...actor,
+				issuer_principal_id: issuer,
+				source_account_id: source,
+				destination_account_id: record.destinationAccountId,
+				amount: record.amount,
+				committed_at: record.committedAt,
 			});
-			return stored;
 		},
-		listForWallet(walletId, cursor, limit) {
-			const rows = (cursor === null
-				? sql.exec(
-						`${HISTORY_SQL} ORDER BY l.rowid DESC LIMIT ?`,
-						walletId,
-						walletId,
-						limit + 1,
-					)
-				: sql.exec(
-						`${HISTORY_SQL} AND l.rowid < ? ORDER BY l.rowid DESC LIMIT ?`,
-						walletId,
-						walletId,
-						Number(cursor),
-						limit + 1,
-					)
-			).toArray() as unknown as HistoryJoinRow[];
+		listForAccount(accountId, cursor, limit) {
+			const where =
+				"(source_account_id = ? OR destination_account_id = ?)" +
+				(cursor === null ? "" : " AND rowid < ?");
+			const args: (string | number)[] =
+				cursor === null
+					? [accountId, accountId, limit + 1]
+					: [accountId, accountId, Number(cursor), limit + 1];
+			const rows = sql
+				.exec(
+					`SELECT ${TRANSACTION_COLUMNS} FROM transactions WHERE ${where} ORDER BY rowid DESC LIMIT ?`,
+					...args,
+				)
+				.toArray() as unknown as TransactionRow[];
 			const pageRows = rows.slice(0, limit);
-			const entries: HistoryRow[] = pageRows.map((row) => ({
-				id: rehydrate.operationId(row.op_id),
-				kind: row.kind,
-				amount: row.amount,
-				fromWalletId: rehydrate.walletId(row.from_wallet_id),
-				fromOwnerUserId:
-					row.from_owner === null ? null : rehydrate.userId(row.from_owner),
-				toWalletId: rehydrate.walletId(row.to_wallet_id),
-				toOwnerUserId:
-					row.to_owner === null ? null : rehydrate.userId(row.to_owner),
-				metadata: row.metadata,
-				createdAt: row.op_created_at,
-				...toPersistedActor(row.actor_kind, row.actor_id),
-			}));
 			const last = pageRows.at(-1);
-			const page: Page<HistoryRow> = {
-				entries,
+			const page: Page<TransactionRecord> = {
+				entries: pageRows.map(toTransactionRecord),
 				nextCursor:
 					rows.length > pageRows.length && last !== undefined
-						? String(last.lrowid)
+						? String(last.rowid)
 						: null,
 			};
 			return page;
@@ -244,71 +265,80 @@ export function createOperationRepository(
 	};
 }
 
-export function createLedgerRepository(sql: SqlStorage): LedgerRepository {
-	return {
-		insert(entry) {
-			const id = rehydrate.ledgerId(crypto.randomUUID());
-			sql.exec(
-				"INSERT INTO ledger_transactions (id, operation_id, from_wallet_id, to_wallet_id, amount, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-				id,
-				entry.operationId,
-				entry.fromWalletId,
-				entry.toWalletId,
-				entry.amount,
-				entry.createdAt,
-			);
-			return Object.freeze({
-				id,
-				operationId: entry.operationId,
-				fromWalletId: entry.fromWalletId,
-				toWalletId: entry.toWalletId,
-				amount: entry.amount,
-				createdAt: entry.createdAt,
-			});
-		},
-	};
-}
-
-type IdentityBindingRow = {
-	readonly user_id: string;
-};
-
 /**
- * SQLite-backed IdentityBinding storage: exact `(issuer, subject)` lookup
- * plus the registration-owned `insert`. A duplicate pair is rejected by
- * the UNIQUE constraint and propagates as a storage failure — callers
- * resolve the binding before inserting, inside the same serialized
- * section.
+ * SQLite-backed IdentityBinding storage: exact `(issuer, subject)` lookup,
+ * same-issuer subject listing for the counterparty projection, and the
+ * registration-owned `insert`. A duplicate pair is rejected by the UNIQUE
+ * constraint and propagates as a storage failure.
  */
 export function createIdentityBindingRepository(
 	sql: SqlStorage,
 ): IdentityBindingRepository {
 	return {
-		findUserIdByExternal(issuer, subject) {
+		findPrincipalIdByExternal(issuer, subject) {
 			const rows = sql
 				.exec(
-					"SELECT user_id FROM identity_bindings WHERE issuer = ? AND subject = ?",
+					"SELECT principal_id FROM identity_bindings WHERE issuer = ? AND subject = ?",
 					issuer,
 					subject,
 				)
-				.toArray() as unknown as IdentityBindingRow[];
+				.toArray() as unknown as { principal_id: string }[];
 			const row = rows[0];
-			return row === undefined ? undefined : rehydrate.userId(row.user_id);
+			return row === undefined
+				? undefined
+				: rehydrate.principalId(row.principal_id);
+		},
+		listSubjects(principalId, issuer) {
+			const rows = sql
+				.exec(
+					"SELECT subject FROM identity_bindings WHERE principal_id = ? AND issuer = ?",
+					principalId,
+					issuer,
+				)
+				.toArray() as unknown as { subject: string }[];
+			return Object.freeze(rows.map((row) => row.subject));
 		},
 		insert(binding) {
 			sql.exec(
-				"INSERT INTO identity_bindings (issuer, subject, user_id, created_at) VALUES (?, ?, ?, ?)",
+				"INSERT INTO identity_bindings (issuer, subject, principal_id, created_at) VALUES (?, ?, ?, ?)",
 				binding.issuer,
 				binding.subject,
-				binding.userId,
+				binding.principalId,
 				binding.createdAt,
 			);
 		},
 	};
 }
 
+/**
+ * SQLite-backed administrative issuer mapping: the `singleton = 1` primary
+ * key admits one row, and the immutability triggers keep it stable.
+ */
+export function createAdministrativeIssuerRepository(
+	sql: SqlStorage,
+): AdministrativeIssuerRepository {
+	return {
+		find() {
+			const rows = sql
+				.exec("SELECT principal_id FROM administrative_issuer")
+				.toArray() as unknown as { principal_id: string }[];
+			const row = rows[0];
+			return row === undefined
+				? undefined
+				: rehydrate.principalId(row.principal_id);
+		},
+		insert(principalId, createdAt) {
+			sql.exec(
+				"INSERT INTO administrative_issuer (singleton, principal_id, created_at) VALUES (1, ?, ?)",
+				principalId,
+				createdAt,
+			);
+		},
+	};
+}
+
 type IdempotencyRow = {
-	readonly service_principal: string;
+	readonly technical_caller: string;
 	readonly idempotency_key: string;
 	readonly fingerprint_version: string;
 	readonly request_fingerprint: string;
@@ -317,7 +347,7 @@ type IdempotencyRow = {
 };
 
 /**
- * SQLite-backed IdempotencyRecord storage: the `(service_principal,
+ * SQLite-backed IdempotencyRecord storage: the `(technical_caller,
  * idempotency_key)` UNIQUE constraint is the storage floor that makes a
  * duplicate `insert` fail, so a second commit under the same key can never
  * overwrite the first replay record.
@@ -326,18 +356,18 @@ export function createIdempotencyRepository(
 	sql: SqlStorage,
 ): IdempotencyRepository {
 	return {
-		find(servicePrincipal, idempotencyKey) {
+		find(technicalCaller, idempotencyKey) {
 			const rows = sql
 				.exec(
-					"SELECT service_principal, idempotency_key, fingerprint_version, request_fingerprint, stored_result, created_at FROM idempotency_records WHERE service_principal = ? AND idempotency_key = ?",
-					servicePrincipal,
+					"SELECT technical_caller, idempotency_key, fingerprint_version, request_fingerprint, stored_result, created_at FROM idempotency_records WHERE technical_caller = ? AND idempotency_key = ?",
+					technicalCaller,
 					idempotencyKey,
 				)
 				.toArray() as unknown as IdempotencyRow[];
 			const row = rows[0];
 			if (row === undefined) return undefined;
 			const record: IdempotencyRecord = {
-				servicePrincipal: row.service_principal,
+				technicalCaller: row.technical_caller,
 				idempotencyKey: row.idempotency_key,
 				fingerprintVersion: row.fingerprint_version,
 				requestFingerprint: row.request_fingerprint,
@@ -348,33 +378,14 @@ export function createIdempotencyRepository(
 		},
 		insert(record) {
 			sql.exec(
-				"INSERT INTO idempotency_records (service_principal, idempotency_key, fingerprint_version, request_fingerprint, stored_result, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-				record.servicePrincipal,
+				"INSERT INTO idempotency_records (technical_caller, idempotency_key, fingerprint_version, request_fingerprint, stored_result, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+				record.technicalCaller,
 				record.idempotencyKey,
 				record.fingerprintVersion,
 				record.requestFingerprint,
 				record.storedResult,
 				record.createdAt,
 			);
-		},
-	};
-}
-
-/**
- * SQLite-backed User storage (issue #4 PR-4): append-only; registration
- * allocates each User id with `crypto.randomUUID()` at the persistence
- * boundary.
- */
-export function createUserRepository(sql: SqlStorage): UserRepository {
-	return {
-		insert(record) {
-			const id = rehydrate.userId(crypto.randomUUID());
-			sql.exec(
-				"INSERT INTO users (id, created_at) VALUES (?, ?)",
-				id,
-				record.createdAt,
-			);
-			return Object.freeze({ id, createdAt: record.createdAt });
 		},
 	};
 }
@@ -411,7 +422,7 @@ function toRegistrationIntent(row: RegistrationIntentRow): RegistrationIntent {
 }
 
 /**
- * SQLite-backed RegistrationIntent storage (issue #4 PR-4): the
+ * SQLite-backed RegistrationIntent storage: the
  * application boundary's `proofKeySecret` maps to the `pkce_verifier`
  * column. The storage floor enforces the lifecycle: `supersedeActive`
  * rewrites every status-active row of the pair (including already-expired

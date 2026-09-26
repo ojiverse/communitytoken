@@ -1,8 +1,7 @@
 /**
- * Ports of the application layer (the transaction-consistency specification): the behavioral contracts the
- * runtime-independent use cases require from their environment. Only the
- * ports consumed by the initial economic use cases are declared here; later
- * phases add theirs with the feature that consumes them.
+ * Ports of the application layer (transaction-consistency specification):
+ * the behavioral contracts the runtime-independent use cases require from
+ * their environment.
  *
  * Boundary invariant for every implementation:
  *
@@ -13,28 +12,21 @@
  */
 
 import type {
-	Actor,
-	HistoryRow,
+	Account,
+	AccountId,
 	IdempotencyRecord,
-	LedgerRecord,
-	OperationId,
-	OperationKind,
-	OperationRecord,
 	Page,
+	PrincipalId,
+	PrincipalRecord,
 	RegistrationIntent,
 	RegistrationIntentId,
-	UserId,
-	UserRecord,
-	UserWallet,
-	Wallet,
-	WalletId,
+	TransactionRecord,
 } from "./types";
 
 /**
- * The application clock authority (the temporal-authority specification). Callers never supply
- * authoritative timestamps; the production implementation samples
- * `Date.now()` once inside each serialized transaction and serves that
- * frozen value for the whole transaction. Tests inject a fixed or stepping
+ * The application clock authority (temporal-authority specification).
+ * Callers never supply authoritative timestamps; the `UnitOfWork` samples
+ * the clock once per serialized section. Tests inject a fixed or stepping
  * clock.
  */
 export interface Clock {
@@ -56,195 +48,259 @@ export type Synchronous<R> = R extends PromiseLike<unknown> ? never : R;
  * boundary is unrepresentable.
  */
 export type TransactionScope = {
-	readonly wallets: WalletRepository;
-	readonly operations: OperationRepository;
-	readonly ledger: LedgerRepository;
+	readonly principals: PrincipalRepository;
+	readonly accounts: AccountRepository;
+	readonly defaultAccounts: DefaultAccountRepository;
+	readonly transactions: TransactionRepository;
 	readonly identityBindings: IdentityBindingRepository;
+	readonly administrativeIssuer: AdministrativeIssuerRepository;
 	readonly idempotencyRecords: IdempotencyRepository;
-	readonly users: UserRepository;
 	readonly registrationIntents: RegistrationIntentRepository;
 };
 
 /**
  * One open atomic section: the repositories plus the section's frozen clock.
  * Use-case operations take this context so that outer orchestration can own
- * the transaction and extend the atomic unit — an idempotency check and its
- * recorded result commit in the same section as the economic mutation (the
- * transaction and idempotency specifications).
+ * the transaction and extend the atomic unit — an idempotency record commits
+ * in the same section as the monetary mutation it protects.
  *
  * The context is valid only while its owning section is open: every
- * repository method it exposes throws once the owning `transact` call
- * returns — handles must not outlive the boundary, and a stale handle
- * never becomes usable again while a later section is open. Repository
- * values are storage-owned immutable records: they cannot alias-mutate
- * repository state, which only changes through repository mutation
- * methods.
+ * property read and every repository method throws once the owning
+ * `transact` call returns, and a stale handle never becomes usable again
+ * while a later section is open. Repository values are storage-owned
+ * immutable records.
  */
 export type TransactionContext = TransactionScope & {
 	/**
-	 * The section's single frozen `now_ms` (the temporal-authority specification): the `UnitOfWork`
-	 * implementation samples its `Clock` exactly once after entering the
-	 * serialized transaction and before `work` runs, so every timestamped
-	 * write in the section shares one value and a clock read during the
-	 * callback cannot split it.
+	 * The section's single frozen `now_ms` (temporal-authority
+	 * specification): sampled exactly once after entering the serialized
+	 * transaction and before `work` runs.
 	 */
 	readonly nowMs: number;
 };
 
 /**
  * The serialized atomic commit boundary every application mutation runs
- * inside (the transaction-consistency specification). The production implementation maps this onto the
- * CommunityState Durable Object's synchronous storage transaction; the
- * boundary is a contract of this layer, not a Cloudflare type.
+ * inside (transaction-consistency specification). The production
+ * implementation maps this onto the CommunityState Durable Object's
+ * synchronous storage transaction.
  */
 export interface UnitOfWork {
 	/**
 	 * Runs `work` inside one serialized atomic section and returns its
 	 * result. On entry the implementation samples its `Clock` exactly once
-	 * and freezes the value as `ctx.nowMs` (the temporal-authority specification), then invokes
-	 * `work` with the open `TransactionContext`: repository handles valid
-	 * only for this section — they are revoked permanently when the call
-	 * returns, so a captured context or repository cannot read or write
-	 * outside the boundary, and it never becomes usable again while a
-	 * later section is open. When the section does not commit — `work` throws or
-	 * returns a PromiseLike — no repository write made inside it is
-	 * persisted; a rejected use case persists nothing at all. `work` must
-	 * be synchronous — `Synchronous<R>` rejects promise-returning functions
-	 * at compile time.
+	 * and freezes the value as `ctx.nowMs`, then invokes `work` with the
+	 * open `TransactionContext`, whose handles are revoked permanently when
+	 * the call returns. When `work` throws or returns a PromiseLike, no
+	 * write made inside the section is persisted.
 	 * @throws {Error} when `work` returns a PromiseLike (the type guard can
-	 *   be escaped through `any`; implementations must check at runtime too).
+	 *   be escaped through `any`; implementations check at runtime too).
 	 * @throws {Error} when a section is opened inside an already-open
 	 *   section — sections compose by sharing one context, never by nesting.
 	 */
 	transact<R>(work: (ctx: TransactionContext) => Synchronous<R>): R;
 }
 
+/** The fields of a Principal the caller supplies; `id` is allocated by the repository. */
+export type NewPrincipal = {
+	readonly createdAt: number;
+};
+
 /**
- * Wallets as the use cases need them: lookup by id or owning user, absolute
- * balance writes driven by kernel `EconomicEffect` deltas, and the total
- * supply fact the evaluator requires.
+ * Principal storage. A Principal carries no kind; it may exist without any
+ * Account or IdentityBinding. Append-only — no update or deletion path.
  */
-export interface WalletRepository {
-	/** Returns the wallet with `id`, or `undefined` when it does not exist. */
-	findById(id: WalletId): Wallet | undefined;
+export interface PrincipalRepository {
+	/** Returns the Principal with `id`, or `undefined` when it does not exist. */
+	findById(id: PrincipalId): PrincipalRecord | undefined;
 
 	/**
-	 * Returns the `user`-kind wallet owned by `userId`, or `undefined` when
-	 * the user owns none (unregistered user or absent wallet).
+	 * Inserts a Principal and returns the stored record, including the id
+	 * allocated at the persistence boundary.
 	 */
-	findByOwnerUserId(userId: UserId): Wallet | undefined;
+	insert(record: NewPrincipal): PrincipalRecord;
+}
+
+/**
+ * The fields of an Account the caller supplies; `id` is allocated by the
+ * repository, `balance` starts at zero, and `updatedAt` equals `createdAt`
+ * — Account creation never creates monetary value.
+ */
+export type NewAccount = {
+	readonly ownerPrincipalId: PrincipalId;
+	readonly createdAt: number;
+};
+
+/**
+ * Account storage: lookup, zero-balance creation, absolute balance writes
+ * driven by primitive effects, and the total supply fact.
+ */
+export interface AccountRepository {
+	/** Returns the Account with `id`, or `undefined` when it does not exist. */
+	findById(id: AccountId): Account | undefined;
 
 	/**
-	 * Sets `id`'s absolute balance to `balance` and stamps `updatedAt`.
-	 * Callers compute the new balance from facts read inside the same
-	 * transaction; the repository does not accumulate deltas.
+	 * Inserts a zero-balance Account owned by `record.ownerPrincipalId` and
+	 * returns the stored record including its allocated id. A Principal may
+	 * own any number of Accounts.
+	 * @throws {Error} when `ownerPrincipalId` names no existing Principal
+	 *   (the storage foreign key rejects the insert).
 	 */
-	setBalance(id: WalletId, balance: number, updatedAt: number): void;
+	insert(record: NewAccount): Account;
 
 	/**
-	 * Inserts the single zero-balance `user`-kind wallet owned by
-	 * `record.ownerUserId` and returns the stored wallet, including the id
-	 * allocated at the persistence boundary. `updatedAt` equals
-	 * `createdAt`. Only registration creates user wallets, so no
-	 * general-purpose wallet insert exists — the kind/balance fields are
-	 * not caller-supplied.
-	 * @throws {Error} when `ownerUserId` already owns a wallet (the storage
-	 *   UNIQUE constraint on `owner_user_id` rejects the insert).
+	 * Sets `id`'s absolute balance and stamps `updatedAt`. Callers compute
+	 * the new balance from facts read inside the same section; the
+	 * repository does not accumulate deltas.
+	 * @throws {Error} when `id` names no existing Account, or `balance` is
+	 *   outside the monetary balance domain (storage CHECK).
 	 */
-	insertUserWallet(record: NewUserWallet): UserWallet;
+	setBalance(id: AccountId, balance: number, updatedAt: number): void;
 
-	/** Returns the sum of all wallet balances — the economic-state specification `supply(S)` fact. */
+	/** Returns the sum of all Account balances — the total supply. */
 	totalSupply(): number;
 }
 
-/** The fields of an EconomicOperation the caller supplies; `id` is allocated by the repository. */
-export type NewOperation = {
-	readonly kind: OperationKind;
-	readonly metadata: string | null;
-	readonly actor: Actor;
+/** The fields of a default-Account designation (persistence specification). */
+export type NewDefaultAccountDesignation = {
+	readonly principalId: PrincipalId;
+	readonly accountId: AccountId;
 	readonly createdAt: number;
 };
 
 /**
- * EconomicOperation records. Append is the only mutation; history queries
- * join each operation to its ledger movement (the economic-state specification `op : L -> O`
- * correspondence is a bijection in the current model).
+ * Application-owned default-Account designation: `Principal -> Account`,
+ * zero or one per Principal, and only an Account owned by that Principal.
+ * It is not a generic role registry and does not alter primitive Account
+ * semantics. Designations are immutable once made.
  */
-export interface OperationRepository {
+export interface DefaultAccountRepository {
 	/**
-	 * Appends a new EconomicOperation and returns the stored record,
-	 * including the id allocated at the persistence boundary and the
-	 * `actor_kind`/`actor_id` columns derived from `record.actor`.
+	 * Returns the Account designated as `principalId`'s default, or
+	 * `undefined` when the Principal has no designation.
 	 */
-	insert(record: NewOperation): OperationRecord;
+	findAccountId(principalId: PrincipalId): AccountId | undefined;
 
 	/**
-	 * Returns the operation+ledger join rows whose movement touches
-	 * `walletId` (`from_wallet_id` or `to_wallet_id` equals it), newest
-	 * first. `cursor` is the opaque continuation value from a previous call;
-	 * pass `null` for the first page. The implementation owns the cursor
-	 * encoding (production encodes the storage rowid per the persistence specification).
-	 * `nextCursor` is `null` when the result is exhausted. `limit` is a
+	 * Designates `designation.accountId` as the Principal's default.
+	 * @throws {Error} when the Principal already has a designation, when the
+	 *   Account is not owned by that Principal, or when the Account is
+	 *   already designated for another Principal (storage primary key,
+	 *   composite foreign key, and unique constraints).
+	 */
+	designate(designation: NewDefaultAccountDesignation): void;
+}
+
+/** The fields of an ISSUE the caller supplies; `id` is allocated by the repository. */
+export type NewIssueTransaction = {
+	readonly kind: "ISSUE";
+	readonly issuerPrincipalId: PrincipalId;
+	readonly destinationAccountId: AccountId;
+	readonly amount: number;
+	readonly committedAt: number;
+};
+
+/** The fields of a TRANSFER the caller supplies; `id` is allocated by the repository. */
+export type NewTransferTransaction = {
+	readonly kind: "TRANSFER";
+	readonly sourceAccountId: AccountId;
+	readonly destinationAccountId: AccountId;
+	readonly amount: number;
+	readonly committedAt: number;
+};
+
+/** A Transaction to append. */
+export type NewTransaction = NewIssueTransaction | NewTransferTransaction;
+
+/**
+ * Immutable Transaction history. Append is the only mutation — the storage
+ * floor rejects updates and deletes.
+ */
+export interface TransactionRepository {
+	/**
+	 * Appends a Transaction and returns the stored record, including the id
+	 * allocated at the persistence boundary.
+	 * @throws {Error} when a referenced Principal or Account does not exist
+	 *   or the amount is outside the monetary domain (storage constraints).
+	 */
+	insert(record: NewTransaction): TransactionRecord;
+
+	/**
+	 * Returns the Transactions whose source or destination is `accountId`,
+	 * newest first. `cursor` is the opaque continuation value from a
+	 * previous call (`null` for the first page); the implementation owns
+	 * its encoding. `nextCursor` is `null` when exhausted. `limit` is a
 	 * positive page size already validated by the caller.
 	 */
-	listForWallet(
-		walletId: WalletId,
+	listForAccount(
+		accountId: AccountId,
 		cursor: string | null,
 		limit: number,
-	): Page<HistoryRow>;
+	): Page<TransactionRecord>;
 }
 
-/** The fields of a LedgerTransaction the caller supplies; `id` is allocated by the repository. */
-export type NewLedgerEntry = {
-	readonly operationId: OperationId;
-	readonly fromWalletId: WalletId;
-	readonly toWalletId: WalletId;
-	readonly amount: number;
-	readonly createdAt: number;
-};
-
-/**
- * LedgerTransaction records. Append is the only mutation — the ledger is
- * append-only as a matter of storage-enforced semantics (the transaction-consistency specification).
- */
-export interface LedgerRepository {
-	/**
-	 * Appends a LedgerTransaction bound to `entry.operationId` and returns
-	 * the stored record, including the id allocated at the persistence
-	 * boundary.
-	 */
-	insert(entry: NewLedgerEntry): LedgerRecord;
-}
-
-/**
- * The fields of a user-owned Wallet the caller supplies; `id` is allocated
- * by the repository and `kind`, `balance`, and `updatedAt` are fixed to
- * `"user"`, `0`, and `createdAt` — a registration wallet cannot be a system
- * wallet or carry a non-zero balance.
- */
-export type NewUserWallet = {
-	readonly ownerUserId: UserId;
-	readonly createdAt: number;
-};
-
-/** The fields of a User the caller supplies; `id` is allocated by the repository. */
-export type NewUser = {
-	readonly createdAt: number;
-};
-
-/** The fields of an IdentityBinding the caller supplies (the identity specification). */
+/** The fields of an IdentityBinding the caller supplies (identity specification). */
 export type NewIdentityBinding = {
 	readonly issuer: string;
 	readonly subject: string;
-	readonly userId: UserId;
+	readonly principalId: PrincipalId;
 	readonly createdAt: number;
 };
+
+/**
+ * IdentityBinding storage (identity specification): resolves an exact
+ * `(issuer, subject)` external identity to the stable Principal it is bound
+ * to. Append-only — no unlink, disable, or reassignment path.
+ */
+export interface IdentityBindingRepository {
+	/**
+	 * Returns the Principal bound to the exact `(issuer, subject)` pair, or
+	 * `undefined` when no binding exists. No normalization is applied.
+	 */
+	findPrincipalIdByExternal(
+		issuer: string,
+		subject: string,
+	): PrincipalId | undefined;
+
+	/**
+	 * Returns every subject bound to `principalId` under the exact
+	 * `issuer`, in no particular order; empty when there is none. Used for
+	 * the unique same-issuer counterparty projection.
+	 */
+	listSubjects(principalId: PrincipalId, issuer: string): readonly string[];
+
+	/**
+	 * Appends the IdentityBinding for `binding`'s exact pair. Called only by
+	 * registration completion.
+	 * @throws {Error} when the pair is already bound (storage UNIQUE).
+	 */
+	insert(binding: NewIdentityBinding): void;
+}
+
+/**
+ * The application-owned mapping from the single administrative technical
+ * authority to its stable issuer Principal. It holds at most one row, is
+ * immutable once set, and is not a Principal subtype or role registry.
+ */
+export interface AdministrativeIssuerRepository {
+	/**
+	 * Returns the administrative issuer Principal, or `undefined` before
+	 * initialization has created it.
+	 */
+	find(): PrincipalId | undefined;
+
+	/**
+	 * Records `principalId` as the administrative issuer Principal.
+	 * @throws {Error} when a mapping already exists or `principalId` names
+	 *   no existing Principal (storage constraints).
+	 */
+	insert(principalId: PrincipalId, createdAt: number): void;
+}
 
 /**
  * The fields of a RegistrationIntent the caller supplies; `id` is allocated
  * by the repository, `status` starts `"active"`, and `consumedAt` starts
- * `null`. `expiresAt` must equal `createdAt + 600_000` (the storage CHECK
- * enforces it).
+ * `null`. `expiresAt` must equal `createdAt + 600_000`.
  */
 export type NewRegistrationIntent = {
 	readonly expectedIssuer: string;
@@ -257,110 +313,57 @@ export type NewRegistrationIntent = {
 };
 
 /**
- * IdentityBinding storage (the identity specification): resolves an exact
- * `(issuer, subject)` external identity to the stable internal User it is
- * bound to. Creation is registration-owned — `insert` exists only so the
- * registration completion section can commit the binding atomically with
- * the User and wallet it points to. No unlink/disable/reassignment path
- * exists in Phase 2.
- */
-export interface IdentityBindingRepository {
-	/**
-	 * Returns the internal User bound to the exact `(issuer, subject)`
-	 * pair, or `undefined` when no binding exists. Both arguments are
-	 * already wire-validated non-empty strings; no normalization is
-	 * applied — the lookup is an exact match.
-	 */
-	findUserIdByExternal(issuer: string, subject: string): UserId | undefined;
-
-	/**
-	 * Appends the IdentityBinding for `binding`'s exact `(issuer, subject)`
-	 * pair. Called only inside the registration completion section.
-	 * @throws {Error} when the `(issuer, subject)` pair is already bound
-	 *   (the storage UNIQUE constraint rejects the insert).
-	 */
-	insert(binding: NewIdentityBinding): void;
-}
-
-/**
- * User storage (the identity specification): registration allocates a
- * stable internal User per proven external identity. Append-only — a User
- * has no update or deletion path in Phase 2.
- */
-export interface UserRepository {
-	/**
-	 * Inserts a User and returns the stored record, including the id
-	 * allocated at the persistence boundary (`crypto.randomUUID()`).
-	 */
-	insert(record: NewUser): UserRecord;
-}
-
-/**
- * RegistrationIntent storage (the registration specification): the
- * one-shot registration transaction state keyed by the unguessable
- * `state` correlation value. Lifecycle is storage-enforced: only
- * `active -> consumed` (non-null `consumed_at`) and
- * `active -> superseded` (null `consumed_at`) transitions are legal, and
- * identity/proof columns are immutable.
+ * RegistrationIntent storage (registration specification), keyed by the
+ * unguessable `state` correlation value. Only `active -> consumed` and
+ * `active -> superseded` transitions are legal and identity/proof columns
+ * are immutable.
  */
 export interface RegistrationIntentRepository {
 	/**
-	 * Returns the intent with the exact `state` correlation value, or
-	 * `undefined` when none exists. The status/lifecycle columns are
-	 * returned verbatim — expiry evaluation (`nowMs >= expiresAt`) is the
-	 * caller's job.
+	 * Returns the intent with the exact `state`, or `undefined`. Expiry
+	 * evaluation (`nowMs >= expiresAt`) is the caller's job.
 	 */
 	findByState(state: string): RegistrationIntent | undefined;
 
 	/**
-	 * Marks every status-`active` intent of the exact
-	 * `(expectedIssuer, expectedSubject)` pair `superseded` — including
-	 * already-expired ones, which keeps the partial unique index from
-	 * blocking the replacement insert. Non-active rows are untouched.
+	 * Marks every status-`active` intent of the exact pair `superseded`,
+	 * including already-expired ones. Non-active rows are untouched.
 	 */
 	supersedeActive(expectedIssuer: string, expectedSubject: string): void;
 
 	/**
-	 * Inserts a new status-`active` intent and returns the stored record,
-	 * including the id allocated at the persistence boundary
-	 * (`crypto.randomUUID()`).
-	 * @throws {Error} when `record.expiresAt !== record.createdAt +
-	 *   600_000` or another active intent exists for the pair (storage
-	 *   CHECK / partial unique index reject the insert).
+	 * Inserts a new status-`active` intent and returns the stored record.
+	 * @throws {Error} when `expiresAt !== createdAt + 600_000` or another
+	 *   active intent exists for the pair (storage constraints).
 	 */
 	insert(record: NewRegistrationIntent): RegistrationIntent;
 
 	/**
-	 * Marks the intent `id` `consumed` at `consumedAt` — the single-use
-	 * terminal transition. Only ever called on a status-`active` row.
-	 * @throws {Error} when `id` is not status-`active` (the lifecycle
-	 *   trigger rejects the transition).
+	 * Marks the intent `id` `consumed` at `consumedAt`.
+	 * @throws {Error} when `id` is not status-`active`.
 	 */
 	markConsumed(id: RegistrationIntentId, consumedAt: number): void;
 }
 
 /**
- * IdempotencyRecord storage (the idempotency specification): the durable
- * replay table keyed by `(servicePrincipal, idempotencyKey)`. Append is the
- * only mutation — a record is written only when the protected mutation it
- * guards commits in the same serialized section, and records never expire
- * or change.
+ * IdempotencyRecord storage (idempotency specification), keyed by
+ * `(technicalCaller, idempotencyKey)`. Append is the only mutation — a
+ * record is written only when the protected mutation it guards commits in
+ * the same section, and records never expire or change.
  */
 export interface IdempotencyRepository {
 	/**
-	 * Returns the stored replay record for the
-	 * `(servicePrincipal, idempotencyKey)` pair, or `undefined` when no
-	 * protected mutation has ever committed under that pair.
+	 * Returns the replay record for the pair, or `undefined` when no
+	 * protected mutation has committed under it.
 	 */
 	find(
-		servicePrincipal: string,
+		technicalCaller: string,
 		idempotencyKey: string,
 	): IdempotencyRecord | undefined;
 
 	/**
 	 * Persists `record` as the replay record of a committed protected
-	 * mutation. Called at most once per `(servicePrincipal,
-	 * idempotencyKey)` pair — the storage floor enforces uniqueness.
+	 * mutation.
 	 * @throws {Error} when a record for the pair already exists.
 	 */
 	insert(record: IdempotencyRecord): void;

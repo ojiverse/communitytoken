@@ -1,163 +1,179 @@
 /**
- * The CommunityState SQLite schema (issue #4 PR-2 persistence): `users`,
- * `wallets`, `economic_operations`, `ledger_transactions`, plus the
- * append-only enforcement triggers.
+ * The CommunityState SQLite schema: the primitive ledger — `principals`,
+ * `accounts`, `transactions` — plus the application-owned state composed
+ * around it — `default_accounts`, `administrative_issuer`,
+ * `identity_bindings`, `idempotency_records`, and `registration_intents`.
  *
- * `economic_operations.kind` admits exactly the four core operation
- * kinds — `TOKEN_ISSUANCE`, `DISTRIBUTION`, `P2P_TRANSFER`,
- * `TREASURY_PAYMENT` — the same set the economic-kernel `OperationKind`
- * union declares.
+ * Primitive tables carry no product columns: a Principal has no kind, an
+ * Account has no kind, role, default, reserve, or treasury flag. Product
+ * designations live in their own narrow application tables.
  *
- * `wallets` carries the kind/owner correlation CHECK: a `system` wallet has
- * no owner, a `user` wallet always has exactly one — the structural
- * constraint the persistence specification requires at the storage floor.
- * The treasury identity is fixed bidirectionally — `kind = 'system'` iff
- * `id = 'treasury'` — and a partial unique index admits at most one system
- * wallet per deployment.
+ * `accounts.owner_principal_id` references an existing Principal and is
+ * immutable, as is the Account id; Accounts are never deleted. The
+ * `UNIQUE (id, owner_principal_id)` key exists so `default_accounts` can
+ * reference the (Account, owner) pair.
  *
- * Monetary columns enforce their domains at the DB boundary itself, not
- * only in application code: `typeof(...) = 'integer'` rejects fractional
- * or non-numeric values and the BETWEEN bounds fix the
- * `0 <= balance <= 2^53-1` WalletBalance and `1 <= amount <= 2^53-1`
- * TokenAmount domains of the economic-state specification.
+ * `default_accounts` is the application's `Principal -> default Account`
+ * designation: the `principal_id` primary key admits zero or one
+ * designation per Principal; the composite foreign key
+ * `(account_id, principal_id) -> accounts(id, owner_principal_id)` admits
+ * only an Account owned by that same Principal; `account_id UNIQUE` keeps
+ * one Account from being another Principal's default. Designations are
+ * immutable — no re-designation transition is defined.
  *
- * `economic_operations` and `ledger_transactions` are bound by reciprocal
- * `DEFERRABLE INITIALLY DEFERRED` foreign keys: under the current model an
- * EconomicOperation and its LedgerTransaction are exactly 1:1, so neither
- * side may exist alone at commit — an orphan operation or an orphan ledger
- * fails when its transaction commits, and `operation_id`'s UNIQUE keeps the
- * pairing one-to-one.
+ * `administrative_issuer` is the single-row mapping from the one
+ * administrative technical authority to its stable issuer Principal
+ * (authentication/delegation specification). The `singleton = 1` key
+ * admits at most one row, and the row is immutable.
  *
- * The treasury row is a permanent structural row: `treasury_no_delete` and
- * `treasury_identity_immutable` triggers make its `id` / `kind` /
- * `owner_user_id` immutable and the row itself undeletable, while
- * `balance` / `updated_at` stay mutable — the deployment's exactly-one
- * treasury holds for the whole object lifetime, not just at bootstrap.
+ * `transactions` replaces the superseded operation + ledger pair with one
+ * immutable record per primitive ISSUE or TRANSFER. The shape CHECK binds
+ * kind to its references: an ISSUE carries an issuer Principal and no
+ * source Account; a TRANSFER carries a source Account and no issuer. There
+ * is no metadata, reason, or actor column. The table is append-only.
  *
- * Both history tables are append-only as a hard storage-level constraint,
- * not application convention.
+ * Monetary columns enforce their domains at the DB boundary itself:
+ * `typeof(...) = 'integer'` rejects fractional or non-numeric values and
+ * the BETWEEN bounds fix `0 <= balance <= 2^53-1` and
+ * `1 <= amount <= 2^53-1` (economic-state specification).
  *
- * PR-3 adds `identity_bindings` — mapping each exact `(issuer, subject)`
- * external identity to one internal User — and `idempotency_records` — the
- * durable replay table keyed by `(service_principal, idempotency_key)` of
- * the idempotency specification. Both are storage-level append-only: an
- * IdentityBinding has no unlink/disable/reassignment transition and an
- * IdempotencyRecord has no expiry or deletion path in Phase 2, so UPDATE
- * and DELETE are rejected outright on both tables.
+ * `identity_bindings` maps each exact `(issuer, subject)` to one Principal
+ * and is append-only (no unlink, disable, or reassignment). The
+ * `(principal_id, issuer)` index serves the unique same-issuer
+ * counterparty projection. `idempotency_records` is the durable replay
+ * table keyed by `(technical_caller, idempotency_key)` and is append-only.
  *
- * PR-4 adds `registration_intents` — the one-shot registration
- * transaction state of the registration specification. The fixed
- * `expires_at = created_at + 600000` CHECK pins the exact 600-second
- * lifetime and `(status = 'consumed') = (consumed_at IS NOT NULL)` binds
- * the lifecycle status to its terminal timestamp. The partial unique
- * index `one_active_intent_per_identity` admits at most one status-active
- * intent per external identity while consumed and superseded rows coexist
- * freely. Triggers enforce the lifecycle at the storage floor: identity
- * and proof columns (`id`, expected issuer/subject, `state`, `nonce`,
- * `pkce_verifier`, creation time, expiry) are immutable, and the only
- * legal transitions are `active -> consumed` with a non-null
- * `consumed_at` and `active -> superseded` with a null `consumed_at` —
- * every transition out of a terminal status, every no-op `active ->
- * active` write, and every `consumed_at` rewrite after consumption is
- * rejected. There is deliberately no DELETE trigger: the normative model
- * permits future lazy deletion of expired intents even though PR-4
- * exposes no delete path.
+ * `registration_intents` is the one-shot registration state of the
+ * registration specification: the `expires_at = created_at + 600000` CHECK
+ * pins the 600-second lifetime, `(status = 'consumed') = (consumed_at IS
+ * NOT NULL)` binds the lifecycle to its terminal timestamp, the partial
+ * unique index admits at most one status-active intent per identity, and
+ * triggers make identity/proof columns immutable and admit only
+ * `active -> consumed` and `active -> superseded`. There is deliberately
+ * no DELETE trigger: the normative model permits future lazy deletion of
+ * expired intents.
  */
 export const SCHEMA = `
-CREATE TABLE IF NOT EXISTS users (
+CREATE TABLE IF NOT EXISTS principals (
   id TEXT PRIMARY KEY,
   created_at INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS wallets (
+CREATE TRIGGER IF NOT EXISTS principals_immutable_update
+BEFORE UPDATE ON principals
+BEGIN
+  SELECT RAISE(ABORT, 'principals is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS principals_immutable_delete
+BEFORE DELETE ON principals
+BEGIN
+  SELECT RAISE(ABORT, 'principals is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS accounts (
   id TEXT PRIMARY KEY,
-  kind TEXT NOT NULL CHECK (kind IN ('system', 'user')),
-  owner_user_id TEXT UNIQUE REFERENCES users(id),
+  owner_principal_id TEXT NOT NULL REFERENCES principals(id),
   balance INTEGER NOT NULL DEFAULT 0
     CHECK (typeof(balance) = 'integer' AND balance BETWEEN 0 AND 9007199254740991),
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
-  CHECK ((kind = 'system') = (owner_user_id IS NULL)),
-  CHECK ((kind = 'system') = (id = 'treasury'))
+  UNIQUE (id, owner_principal_id)
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS one_system_wallet
-  ON wallets(kind) WHERE kind = 'system';
-
-CREATE TRIGGER IF NOT EXISTS treasury_no_delete
-BEFORE DELETE ON wallets
-WHEN OLD.id = 'treasury'
+CREATE TRIGGER IF NOT EXISTS accounts_identity_immutable
+BEFORE UPDATE OF id, owner_principal_id, created_at ON accounts
 BEGIN
-  SELECT RAISE(ABORT, 'treasury wallet cannot be deleted');
+  SELECT RAISE(ABORT, 'account identity is immutable');
 END;
 
-CREATE TRIGGER IF NOT EXISTS treasury_identity_immutable
-BEFORE UPDATE OF id, kind, owner_user_id ON wallets
-WHEN OLD.id = 'treasury'
+CREATE TRIGGER IF NOT EXISTS accounts_no_delete
+BEFORE DELETE ON accounts
 BEGIN
-  SELECT RAISE(ABORT, 'treasury wallet identity is immutable');
+  SELECT RAISE(ABORT, 'accounts cannot be deleted');
 END;
 
-CREATE TABLE IF NOT EXISTS economic_operations (
-  id TEXT PRIMARY KEY,
-  kind TEXT NOT NULL CHECK (kind IN (
-    'TOKEN_ISSUANCE', 'DISTRIBUTION', 'P2P_TRANSFER', 'TREASURY_PAYMENT'
-  )),
-  metadata TEXT,
-  actor_kind TEXT NOT NULL CHECK (actor_kind IN ('user', 'service', 'system')),
-  actor_id TEXT,
+CREATE TABLE IF NOT EXISTS default_accounts (
+  principal_id TEXT PRIMARY KEY REFERENCES principals(id),
+  account_id TEXT NOT NULL UNIQUE,
   created_at INTEGER NOT NULL,
-  CHECK (
-    (actor_kind IN ('user', 'service') AND actor_id IS NOT NULL)
-    OR (actor_kind = 'system' AND actor_id IS NULL)
-  ),
-  FOREIGN KEY (id) REFERENCES ledger_transactions(operation_id)
-    DEFERRABLE INITIALLY DEFERRED
+  FOREIGN KEY (account_id, principal_id)
+    REFERENCES accounts(id, owner_principal_id)
 );
 
-CREATE TABLE IF NOT EXISTS ledger_transactions (
+CREATE TRIGGER IF NOT EXISTS default_accounts_immutable_update
+BEFORE UPDATE ON default_accounts
+BEGIN
+  SELECT RAISE(ABORT, 'default_accounts designations are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS default_accounts_immutable_delete
+BEFORE DELETE ON default_accounts
+BEGIN
+  SELECT RAISE(ABORT, 'default_accounts designations are immutable');
+END;
+
+CREATE TABLE IF NOT EXISTS administrative_issuer (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  principal_id TEXT NOT NULL UNIQUE REFERENCES principals(id),
+  created_at INTEGER NOT NULL
+);
+
+CREATE TRIGGER IF NOT EXISTS administrative_issuer_immutable_update
+BEFORE UPDATE ON administrative_issuer
+BEGIN
+  SELECT RAISE(ABORT, 'administrative_issuer is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS administrative_issuer_immutable_delete
+BEFORE DELETE ON administrative_issuer
+BEGIN
+  SELECT RAISE(ABORT, 'administrative_issuer is immutable');
+END;
+
+CREATE TABLE IF NOT EXISTS transactions (
   id TEXT PRIMARY KEY,
-  operation_id TEXT NOT NULL UNIQUE,
-  from_wallet_id TEXT NOT NULL REFERENCES wallets(id),
-  to_wallet_id TEXT NOT NULL REFERENCES wallets(id),
+  kind TEXT NOT NULL CHECK (kind IN ('ISSUE', 'TRANSFER')),
+  issuer_principal_id TEXT REFERENCES principals(id),
+  source_account_id TEXT REFERENCES accounts(id),
+  destination_account_id TEXT NOT NULL REFERENCES accounts(id),
   amount INTEGER NOT NULL
     CHECK (typeof(amount) = 'integer' AND amount BETWEEN 1 AND 9007199254740991),
-  created_at INTEGER NOT NULL,
-  FOREIGN KEY (operation_id) REFERENCES economic_operations(id)
-    DEFERRABLE INITIALLY DEFERRED
+  committed_at INTEGER NOT NULL,
+  CHECK (
+    (kind = 'ISSUE' AND issuer_principal_id IS NOT NULL AND source_account_id IS NULL)
+    OR (kind = 'TRANSFER' AND source_account_id IS NOT NULL AND issuer_principal_id IS NULL)
+  )
 );
 
-CREATE TRIGGER IF NOT EXISTS economic_operations_immutable_update
-BEFORE UPDATE ON economic_operations
+CREATE INDEX IF NOT EXISTS transactions_by_source
+  ON transactions(source_account_id);
+
+CREATE INDEX IF NOT EXISTS transactions_by_destination
+  ON transactions(destination_account_id);
+
+CREATE TRIGGER IF NOT EXISTS transactions_immutable_update
+BEFORE UPDATE ON transactions
 BEGIN
-  SELECT RAISE(ABORT, 'economic_operations is append-only');
+  SELECT RAISE(ABORT, 'transactions is append-only');
 END;
 
-CREATE TRIGGER IF NOT EXISTS economic_operations_immutable_delete
-BEFORE DELETE ON economic_operations
+CREATE TRIGGER IF NOT EXISTS transactions_immutable_delete
+BEFORE DELETE ON transactions
 BEGIN
-  SELECT RAISE(ABORT, 'economic_operations is append-only');
-END;
-
-CREATE TRIGGER IF NOT EXISTS ledger_immutable_update
-BEFORE UPDATE ON ledger_transactions
-BEGIN
-  SELECT RAISE(ABORT, 'ledger_transactions is append-only');
-END;
-
-CREATE TRIGGER IF NOT EXISTS ledger_immutable_delete
-BEFORE DELETE ON ledger_transactions
-BEGIN
-  SELECT RAISE(ABORT, 'ledger_transactions is append-only');
+  SELECT RAISE(ABORT, 'transactions is append-only');
 END;
 
 CREATE TABLE IF NOT EXISTS identity_bindings (
   issuer TEXT NOT NULL,
   subject TEXT NOT NULL,
-  user_id TEXT NOT NULL REFERENCES users(id),
+  principal_id TEXT NOT NULL REFERENCES principals(id),
   created_at INTEGER NOT NULL,
   UNIQUE (issuer, subject)
 );
+
+CREATE INDEX IF NOT EXISTS identity_bindings_by_principal
+  ON identity_bindings(principal_id, issuer);
 
 CREATE TRIGGER IF NOT EXISTS identity_bindings_immutable_update
 BEFORE UPDATE ON identity_bindings
@@ -172,13 +188,13 @@ BEGIN
 END;
 
 CREATE TABLE IF NOT EXISTS idempotency_records (
-  service_principal TEXT NOT NULL,
+  technical_caller TEXT NOT NULL,
   idempotency_key TEXT NOT NULL,
   fingerprint_version TEXT NOT NULL,
   request_fingerprint TEXT NOT NULL,
   stored_result TEXT NOT NULL,
   created_at INTEGER NOT NULL,
-  UNIQUE (service_principal, idempotency_key)
+  UNIQUE (technical_caller, idempotency_key)
 );
 
 CREATE TRIGGER IF NOT EXISTS idempotency_records_immutable_update

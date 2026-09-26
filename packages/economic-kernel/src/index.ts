@@ -1,197 +1,240 @@
 /**
- * Runtime-independent economic evaluator for the CommunityToken rebuild.
+ * Runtime-independent primitive ledger evaluator for CommunityToken.
  *
- * Owns the transition rules of the economic-transitions specification and the
- * preconditions of the economic-state specification's formal model. This is the production-bound economic kernel: a pure
- * function from current economic facts plus a command to either a rejection or
- * an `EconomicEffect`. It owns nothing else — no state, history, users,
- * storage, clock, or identifier allocation. Durable record identity and commit
- * timestamps are allocated at the persistence boundary that applies the
- * effect; balance deltas are expressed per wallet (the economic-transitions specification delta semantics), so a
- * self-transfer is a recorded net-zero movement rather than an error or a
- * supply leak.
+ * Owns the ISSUE and TRANSFER transition rules of the economic-transitions
+ * specification over the Principal / Account model of the economic-state
+ * specification. Each evaluator is a pure function from current facts plus a
+ * command to either a rejection or an effect. It owns nothing else — no
+ * state, history, identity, storage, clock, identifier allocation, or
+ * authorization: the kernel never decides whether an issuer Principal is
+ * permitted to issue, and it knows no Account kind or product role. Durable
+ * Transaction identity and commit time are allocated at the persistence
+ * boundary that applies the effect.
  */
 
-/** Upper bound of every monetary domain (the economic-state specification): TokenAmount, WalletBalance, TotalSupply. */
+/** Upper bound of every monetary domain (economic-state specification): amount, balance, supply. */
 export const MAX_MONETARY_VALUE = Number.MAX_SAFE_INTEGER;
 
-/** Well-known identifier of the deployment's single system wallet (the economic-state specification). */
-export const TREASURY_WALLET_ID = "treasury";
-
-export type WalletKind = "system" | "user";
-
-export type OperationKind =
-	| "TOKEN_ISSUANCE"
-	| "DISTRIBUTION"
-	| "P2P_TRANSFER"
-	| "TREASURY_PAYMENT";
+/** The two primitive monetary Transaction kinds. */
+export type TransactionKind = "ISSUE" | "TRANSFER";
 
 /**
- * The facts about one wallet that the transition rules read. Callers resolve
- * command wallet references to facts — `undefined` means the wallet does not
- * exist and the evaluator will reject with `WALLET_NOT_FOUND`.
+ * The facts about one Account the transition rules read. Callers resolve
+ * command Account ids to facts — `undefined` means the Account does not
+ * exist and evaluation rejects with `ACCOUNT_NOT_FOUND`.
  */
-export type WalletFacts = {
+export type AccountFacts = {
 	readonly id: string;
-	readonly kind: WalletKind;
 	readonly balance: number;
 };
 
-/** Every economic fact a command's evaluation may read. */
-export type EconomicFacts = {
-	readonly from: WalletFacts | undefined;
-	readonly to: WalletFacts | undefined;
+/**
+ * The facts about the issuer Principal ISSUE reads: only its existence.
+ * `undefined` rejects with `PRINCIPAL_NOT_FOUND`.
+ */
+export type PrincipalFacts = {
+	readonly id: string;
+};
+
+/** Every fact an ISSUE evaluation reads. */
+export type IssueFacts = {
+	readonly issuer: PrincipalFacts | undefined;
+	readonly destination: AccountFacts | undefined;
 	readonly totalSupply: number;
 };
 
-export type OperationCommand = {
-	readonly kind: OperationKind;
-	readonly fromWalletId: string;
-	readonly toWalletId: string;
+/** Every fact a TRANSFER evaluation reads. TRANSFER never changes supply. */
+export type TransferFacts = {
+	readonly source: AccountFacts | undefined;
+	readonly destination: AccountFacts | undefined;
+};
+
+/** ISSUE(issuerPrincipal, destinationAccount, amount). */
+export type IssueCommand = {
+	readonly issuerPrincipalId: string;
+	readonly destinationAccountId: string;
 	readonly amount: number;
-	readonly metadata?: string;
+};
+
+/** TRANSFER(sourceAccount, destinationAccount, amount). */
+export type TransferCommand = {
+	readonly sourceAccountId: string;
+	readonly destinationAccountId: string;
+	readonly amount: number;
 };
 
 export type RejectionCode =
 	| "INVALID_AMOUNT"
-	| "WALLET_NOT_FOUND"
-	| "DIRECTION_VIOLATION"
+	| "PRINCIPAL_NOT_FOUND"
+	| "ACCOUNT_NOT_FOUND"
 	| "INSUFFICIENT_BALANCE"
 	| "OVERFLOW";
 
 /**
- * The semantic effect of an accepted operation (the economic-transitions specification transition output):
- * `deltas` maps each touched wallet to its signed balance change — the
- * indicator-form `Delta_C(w)` of the formal model restricted to non-zero
- * entries — while the remaining fields are the facts the persistence boundary
- * records as the EconomicOperation and its LedgerTransaction.
+ * Signed balance change per touched Account, restricted to non-zero
+ * entries: a self-transfer is an accepted effect with no delta.
  */
-export type EconomicEffect = {
-	readonly kind: OperationKind;
-	readonly fromWalletId: string;
-	readonly toWalletId: string;
+export type EffectDeltas = ReadonlyMap<string, number>;
+
+/**
+ * The effect of an accepted ISSUE: the facts the persistence boundary
+ * records as the Transaction — including the issuer Principal, the durable
+ * provenance of the created supply — plus the balance deltas to apply.
+ */
+export type IssueEffect = {
+	readonly kind: "ISSUE";
+	readonly issuerPrincipalId: string;
+	readonly destinationAccountId: string;
 	readonly amount: number;
-	readonly metadata: string | null;
-	readonly deltas: ReadonlyMap<string, number>;
+	readonly deltas: EffectDeltas;
 };
 
-export type AcceptedOperation = {
-	readonly accepted: true;
-	readonly effect: EconomicEffect;
+/**
+ * The effect of an accepted TRANSFER. It deliberately carries no issuer or
+ * actor: TRANSFER authorization is application-owned.
+ */
+export type TransferEffect = {
+	readonly kind: "TRANSFER";
+	readonly sourceAccountId: string;
+	readonly destinationAccountId: string;
+	readonly amount: number;
+	readonly deltas: EffectDeltas;
 };
 
-export type RejectedOperation = {
+export type Rejection = {
 	readonly accepted: false;
 	readonly code: RejectionCode;
 	readonly detail: string;
 };
 
-export type OperationDecision = AcceptedOperation | RejectedOperation;
+export type Decision<E> =
+	| { readonly accepted: true; readonly effect: E }
+	| Rejection;
 
-function directionHolds(
-	kind: OperationKind,
-	from: WalletFacts,
-	to: WalletFacts,
-): boolean {
-	switch (kind) {
-		case "TOKEN_ISSUANCE":
-			return from.id === to.id && from.kind === "system";
-		case "DISTRIBUTION":
-			return from.kind === "system" && to.kind === "user";
-		case "P2P_TRANSFER":
-			return from.kind === "user" && to.kind === "user";
-		case "TREASURY_PAYMENT":
-			return from.kind === "user" && to.kind === "system";
-	}
-}
-
-function reject(code: RejectionCode, detail: string): RejectedOperation {
+function reject(code: RejectionCode, detail: string): Rejection {
 	return { accepted: false, code, detail };
 }
 
-/**
- * Evaluates a command against current economic facts. Pure and total: every
- * input produces either a rejection (nothing committable exists) or an effect
- * the caller persists atomically. Validation order follows the economic-transitions specification: amount domain,
- * wallet existence, direction discipline, funds, then the domain bounds of the
- * resulting balances and total supply.
- *
- * @throws {Error} when `facts` was resolved against different wallet ids than
- *   the command names — a caller contract violation, not a rejection.
- */
-export function evaluateOperation(
-	facts: EconomicFacts,
-	command: OperationCommand,
-): OperationDecision {
-	const { kind, fromWalletId, toWalletId, amount, metadata } = command;
-
-	if (!Number.isSafeInteger(amount) || amount < 1) {
-		return reject(
-			"INVALID_AMOUNT",
-			`amount must be an integer in 1..${MAX_MONETARY_VALUE}, got ${amount}`,
-		);
-	}
-	const { from, to, totalSupply } = facts;
-	if (from === undefined || to === undefined) {
-		const missing = from === undefined ? fromWalletId : toWalletId;
-		return reject("WALLET_NOT_FOUND", `wallet not found: ${missing}`);
-	}
-	if (from.id !== fromWalletId || to.id !== toWalletId) {
-		throw new Error(
-			`facts/command mismatch: command is ${fromWalletId} -> ${toWalletId}, ` +
-				`facts are ${from.id} -> ${to.id}`,
-		);
-	}
-	if (!directionHolds(kind, from, to)) {
-		return reject(
-			"DIRECTION_VIOLATION",
-			`${kind} does not admit ${from.kind} -> ${to.kind}`,
-		);
-	}
-	if (kind !== "TOKEN_ISSUANCE" && from.balance < amount) {
-		return reject(
-			"INSUFFICIENT_BALANCE",
-			`wallet ${from.id} has ${from.balance}, needs ${amount}`,
-		);
-	}
-
-	const deltas = new Map<string, number>();
-	if (kind === "TOKEN_ISSUANCE") {
-		deltas.set(to.id, amount);
-	} else {
-		// Indicator-form Delta_C(w) = -amount*[w=from] + amount*[w=to]: a
-		// self-transfer cancels to an explicit zero, which is then dropped as
-		// a no-op balance change while the movement is still recorded.
-		deltas.set(from.id, (deltas.get(from.id) ?? 0) - amount);
-		deltas.set(to.id, (deltas.get(to.id) ?? 0) + amount);
-		if (deltas.get(from.id) === 0) deltas.delete(from.id);
-	}
-	// Per the economic-transitions specification: every resulting balance stays in WalletBalance. A
-	// self-transfer produces no delta, so it can never overflow.
-	for (const [walletId, delta] of deltas) {
-		const wallet = walletId === from.id ? from : to;
-		if (wallet.balance + delta > MAX_MONETARY_VALUE) {
-			return reject(
-				"OVERFLOW",
-				`credit would push wallet ${walletId} above ${MAX_MONETARY_VALUE}`,
+function invalidAmount(amount: number): Rejection | null {
+	return Number.isSafeInteger(amount) && amount >= 1
+		? null
+		: reject(
+				"INVALID_AMOUNT",
+				`amount must be an integer in 1..${MAX_MONETARY_VALUE}, got ${amount}`,
 			);
-		}
+}
+
+function assertFactsMatch(label: string, factId: string, commandId: string) {
+	if (factId !== commandId) {
+		throw new Error(
+			`facts/command mismatch: command ${label} is ${commandId}, facts are ${factId}`,
+		);
 	}
-	if (kind === "TOKEN_ISSUANCE" && totalSupply + amount > MAX_MONETARY_VALUE) {
+}
+
+/**
+ * Evaluates ISSUE against current facts. Pure and total. Validation order:
+ * amount domain, issuer Principal existence, destination Account existence,
+ * destination balance bound, total supply bound. Authorization of the
+ * issuer is not evaluated here.
+ *
+ * @throws {Error} when `facts` was resolved against different ids than the
+ *   command names — a caller contract violation, not a rejection.
+ */
+export function evaluateIssue(
+	facts: IssueFacts,
+	command: IssueCommand,
+): Decision<IssueEffect> {
+	const { issuerPrincipalId, destinationAccountId, amount } = command;
+	const amountRejection = invalidAmount(amount);
+	if (amountRejection) return amountRejection;
+	const { issuer, destination, totalSupply } = facts;
+	if (issuer === undefined) {
+		return reject(
+			"PRINCIPAL_NOT_FOUND",
+			`issuer principal not found: ${issuerPrincipalId}`,
+		);
+	}
+	assertFactsMatch("issuer", issuer.id, issuerPrincipalId);
+	if (destination === undefined) {
+		return reject(
+			"ACCOUNT_NOT_FOUND",
+			`account not found: ${destinationAccountId}`,
+		);
+	}
+	assertFactsMatch("destination", destination.id, destinationAccountId);
+	if (destination.balance + amount > MAX_MONETARY_VALUE) {
+		return reject(
+			"OVERFLOW",
+			`credit would push account ${destination.id} above ${MAX_MONETARY_VALUE}`,
+		);
+	}
+	if (totalSupply + amount > MAX_MONETARY_VALUE) {
 		return reject(
 			"OVERFLOW",
 			`issuance would push total supply above ${MAX_MONETARY_VALUE}`,
 		);
 	}
-
 	return {
 		accepted: true,
 		effect: {
-			kind,
-			fromWalletId: from.id,
-			toWalletId: to.id,
+			kind: "ISSUE",
+			issuerPrincipalId: issuer.id,
+			destinationAccountId: destination.id,
 			amount,
-			metadata: metadata ?? null,
+			deltas: new Map([[destination.id, amount]]),
+		},
+	};
+}
+
+/**
+ * Evaluates TRANSFER against current facts. Pure and total. Validation
+ * order: amount domain, source and destination existence, sufficient source
+ * balance, destination balance bound. A self-transfer is accepted when the
+ * source holds the amount and produces no delta.
+ *
+ * @throws {Error} when `facts` was resolved against different ids than the
+ *   command names — a caller contract violation, not a rejection.
+ */
+export function evaluateTransfer(
+	facts: TransferFacts,
+	command: TransferCommand,
+): Decision<TransferEffect> {
+	const { sourceAccountId, destinationAccountId, amount } = command;
+	const amountRejection = invalidAmount(amount);
+	if (amountRejection) return amountRejection;
+	const { source, destination } = facts;
+	if (source === undefined || destination === undefined) {
+		const missing =
+			source === undefined ? sourceAccountId : destinationAccountId;
+		return reject("ACCOUNT_NOT_FOUND", `account not found: ${missing}`);
+	}
+	assertFactsMatch("source", source.id, sourceAccountId);
+	assertFactsMatch("destination", destination.id, destinationAccountId);
+	if (source.balance < amount) {
+		return reject(
+			"INSUFFICIENT_BALANCE",
+			`account ${source.id} has ${source.balance}, needs ${amount}`,
+		);
+	}
+	const deltas = new Map<string, number>();
+	if (source.id !== destination.id) {
+		if (destination.balance + amount > MAX_MONETARY_VALUE) {
+			return reject(
+				"OVERFLOW",
+				`credit would push account ${destination.id} above ${MAX_MONETARY_VALUE}`,
+			);
+		}
+		deltas.set(source.id, -amount);
+		deltas.set(destination.id, amount);
+	}
+	return {
+		accepted: true,
+		effect: {
+			kind: "TRANSFER",
+			sourceAccountId: source.id,
+			destinationAccountId: destination.id,
+			amount,
 			deltas,
 		},
 	};

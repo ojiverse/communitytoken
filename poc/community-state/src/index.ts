@@ -180,7 +180,8 @@ export class CommunityState extends DurableObject {
 	 *
 	 * Rejection errors carry a contract code prefix (INVALID_AMOUNT,
 	 * WALLET_NOT_FOUND, DIRECTION_VIOLATION, INSUFFICIENT_BALANCE, OVERFLOW)
-	 * so the shared contract suite can assert reasons without parsing prose.
+	 * so the PoC tests can assert reasons without parsing prose. (Historical:
+	 * the PoC no longer runs the shared primitive ledger contract suite.)
 	 */
 	applyOperation(params: OperationParams): string {
 		const { kind, fromWalletId, toWalletId, amount, metadata } = params;

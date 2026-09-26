@@ -1,142 +1,160 @@
+import { runInDurableObject } from "cloudflare:test";
 import {
-	type Actor,
-	ADMIN_API_PRINCIPAL,
+	executeIssue,
+	executeTransfer,
 	rehydrate,
-	TREASURY_SELECTOR,
-	userSelector,
-	type WalletSelector,
+	type TransactionAccepted,
+	type TransactionContext,
+	type UseCaseResult,
 } from "@communitytoken/application";
 import type {
 	EconomicHarness,
 	HarnessCommand,
 	HarnessResult,
-	LedgerView,
-	OperationKind,
-	OperationView,
-	WalletRef,
+	TransactionView,
 } from "@communitytoken/economic-contract";
 import type { CommunityState } from "../src/index";
+import { createStorageUnitOfWork } from "../src/unit-of-work";
 
 /**
- * Adapts the production CommunityState Durable Object to the shared economic
- * contract harness. The mutation path goes through the same application
- * evaluate/persist choreography as the product use cases, so passing the
- * unchanged Phase 1 suite proves the production adapter preserves the
- * economic invariants.
+ * Adapts the production CommunityState storage to the shared primitive
+ * ledger contract. The production object exposes no generic ledger RPC —
+ * administrative issuance is its only ISSUE path — so the harness runs the
+ * application's primitive ledger operations inside the object through
+ * `runInDurableObject`, over the production SQLite schema, repositories,
+ * and `UnitOfWork`. Passing the suite proves the production persistence
+ * preserves the primitive invariants for arbitrary Principals and Accounts.
  */
 
-const ADMIN_ACTOR: Actor = {
-	kind: "service",
-	principalId: ADMIN_API_PRINCIPAL,
+type Row = {
+	readonly id: string;
+	readonly kind: "ISSUE" | "TRANSFER";
+	readonly issuer_principal_id: string | null;
+	readonly source_account_id: string | null;
+	readonly destination_account_id: string;
+	readonly amount: number;
+	readonly committed_at: number;
 };
 
-/**
- * Deterministic harness actor mapping (issue #4): administrative kinds are
- * attributed to the `admin-api` principal; user-funded movements are
- * attributed to the source wallet's owning User; commands with no user
- * source — only expressible as deliberately invalid directions — fall back
- * to the identifier-less `system` actor. The actor is persisted audit
- * context and never influences kernel acceptance.
- */
-export function actorFor(command: HarnessCommand): Actor {
-	switch (command.kind) {
-		case "TOKEN_ISSUANCE":
-		case "DISTRIBUTION":
-			return ADMIN_ACTOR;
-		case "P2P_TRANSFER":
-		case "TREASURY_PAYMENT":
-			return command.from.type === "user"
-				? { kind: "user", userId: rehydrate.userId(command.from.userId) }
-				: { kind: "system" };
+function toView(row: Row): TransactionView {
+	if (row.kind === "ISSUE") {
+		return {
+			id: row.id,
+			kind: "ISSUE",
+			issuerPrincipalId: row.issuer_principal_id ?? "",
+			sourceAccountId: null,
+			destinationAccountId: row.destination_account_id,
+			amount: row.amount,
+			committedAt: row.committed_at,
+		};
 	}
+	return {
+		id: row.id,
+		kind: "TRANSFER",
+		issuerPrincipalId: null,
+		sourceAccountId: row.source_account_id ?? "",
+		destinationAccountId: row.destination_account_id,
+		amount: row.amount,
+		committedAt: row.committed_at,
+	};
 }
 
-function selectorFor(ref: WalletRef): WalletSelector {
-	return ref.type === "treasury"
-		? TREASURY_SELECTOR
-		: userSelector(rehydrate.userId(ref.userId));
-}
-
-/** The actor that may read `ref`'s balance under the visibility rules. */
-function readerFor(ref: WalletRef): Actor {
-	return ref.type === "treasury"
-		? ADMIN_ACTOR
-		: { kind: "user", userId: rehydrate.userId(ref.userId) };
+function executeCommand(
+	ctx: TransactionContext,
+	command: HarnessCommand,
+): UseCaseResult<TransactionAccepted> {
+	return command.kind === "ISSUE"
+		? executeIssue(ctx, {
+				issuerPrincipalId: rehydrate.principalId(command.issuerPrincipalId),
+				destinationAccountId: rehydrate.accountId(command.destinationAccountId),
+				amount: command.amount,
+			})
+		: executeTransfer(ctx, {
+				sourceAccountId: rehydrate.accountId(command.sourceAccountId),
+				destinationAccountId: rehydrate.accountId(command.destinationAccountId),
+				amount: command.amount,
+			});
 }
 
 export function createProductionHarness(
 	stub: DurableObjectStub<CommunityState>,
 ): EconomicHarness {
+	let tick = 1_700_000_000_000;
+	function inSection<R>(work: (ctx: TransactionContext) => R): Promise<R> {
+		return runInDurableObject(stub, (_instance, state) => {
+			const uow = createStorageUnitOfWork(state.storage, {
+				nowMs: () => tick++,
+			});
+			return uow.transact((ctx) => work(ctx) as never) as R;
+		});
+	}
 	return {
 		async reset() {
-			// Each test constructs a fresh DO id; nothing to reset.
+			// Each test constructs a fresh DO id; only the administrative
+			// issuer Principal pre-exists, and it owns no Account.
 		},
 
-		async createUser(userId: string) {
-			const result = await stub.createUser(userId);
-			// The suite expects duplicates to reject; the RPC returns the
-			// failure as a value, so the adapter re-throws it locally — no
-			// remote unhandled rejection crosses the DO boundary.
-			if (!result.ok) {
-				throw new Error(result.error);
-			}
-		},
-
-		async apply(command: HarnessCommand): Promise<HarnessResult> {
-			const result = await stub.applyEconomicCommand(actorFor(command), {
-				kind: command.kind,
-				from: selectorFor(command.from),
-				to: selectorFor(command.to),
-				amount: command.amount,
-				...(command.metadata === undefined
-					? {}
-					: { metadata: command.metadata }),
-			});
-			if (result.ok) return { accepted: true };
-			if (result.error.type === "rejected") {
-				return { accepted: false, code: result.error.code };
-			}
-			throw new Error(
-				`unexpected ${result.error.type} failure: ${result.error.detail}`,
+		createPrincipal() {
+			return inSection(
+				(ctx) => ctx.principals.insert({ createdAt: ctx.nowMs }).id,
 			);
 		},
 
-		async balanceOf(ref: WalletRef) {
-			const result = await stub.getBalance(readerFor(ref), selectorFor(ref));
-			if (!result.ok) {
-				throw new Error(`${result.error.type}: ${result.error.detail}`);
+		createAccount(ownerPrincipalId: string) {
+			return inSection(
+				(ctx) =>
+					ctx.accounts.insert({
+						ownerPrincipalId: rehydrate.principalId(ownerPrincipalId),
+						createdAt: ctx.nowMs,
+					}).id,
+			);
+		},
+
+		async apply(command: HarnessCommand): Promise<HarnessResult> {
+			const result = await inSection((ctx) => executeCommand(ctx, command));
+			if (result.ok) {
+				return { accepted: true, transactionId: result.value.transactionId };
 			}
-			return result.value.balance;
+			if (result.error.type !== "rejected") {
+				throw new Error(`unexpected ${result.error.type} failure`);
+			}
+			return { accepted: false, code: result.error.code };
 		},
 
-		async totalSupply() {
-			return stub.totalSupply();
+		async balanceOf(accountId: string) {
+			const balance = await inSection(
+				(ctx) => ctx.accounts.findById(rehydrate.accountId(accountId))?.balance,
+			);
+			if (balance === undefined) throw new Error(`no account: ${accountId}`);
+			return balance;
 		},
 
-		async issuedAmount() {
-			return stub.issuedAmount();
+		totalSupply() {
+			return inSection((ctx) => ctx.accounts.totalSupply());
 		},
 
-		async operations(): Promise<readonly OperationView[]> {
-			const rows = await stub.listOperations();
-			return rows.map((r) => ({
-				id: r.id,
-				kind: r.kind as OperationKind,
-				metadata: r.metadata,
-				createdAt: r.created_at,
-			}));
+		issuedAmount() {
+			return runInDurableObject(stub, (_instance, state) =>
+				Number(
+					state.storage.sql
+						.exec(
+							"SELECT COALESCE(SUM(amount), 0) AS total FROM transactions WHERE kind = 'ISSUE'",
+						)
+						.one()["total"],
+				),
+			);
 		},
 
-		async ledger(): Promise<readonly LedgerView[]> {
-			const rows = await stub.listLedger();
-			return rows.map((r) => ({
-				id: r.id,
-				operationId: r.operation_id,
-				fromWalletId: r.from_wallet_id,
-				toWalletId: r.to_wallet_id,
-				amount: r.amount,
-				createdAt: r.created_at,
-			}));
+		transactions() {
+			return runInDurableObject(stub, (_instance, state) =>
+				(
+					state.storage.sql
+						.exec(
+							"SELECT id, kind, issuer_principal_id, source_account_id, destination_account_id, amount, committed_at FROM transactions ORDER BY rowid",
+						)
+						.toArray() as unknown as Row[]
+				).map(toView),
+			);
 		},
 	};
 }

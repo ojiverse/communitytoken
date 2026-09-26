@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { userId } from "../src/types";
 import {
 	createRegistrationIntent,
 	REGISTRATION_INTENT_TTL_MS,
@@ -29,21 +28,13 @@ function intentInput(subject: string = SUBJECT) {
 	};
 }
 
-/** Seeds a bound identity directly at the repository boundary. */
+/** Seeds a registered identity directly at the repository boundary. */
 function seedBinding(
 	fx: ReturnType<typeof createInMemoryFixture>,
 	issuer: string,
 	subject: string,
-	rawUserId = "existing-user",
 ): void {
-	fx.uow.transact((ctx) => {
-		ctx.identityBindings.insert({
-			issuer,
-			subject,
-			userId: userId(rawUserId),
-			createdAt: ctx.nowMs,
-		});
-	});
+	fx.seedIdentity(subject, issuer);
 }
 
 describe("createRegistrationIntent", () => {
@@ -85,7 +76,7 @@ describe("createRegistrationIntent", () => {
 
 		expect(outcome).toEqual({ type: "alreadyRegistered" });
 		expect(fx.state.registrationIntents.size).toBe(0);
-		expect(fx.state.users.size).toBe(0);
+		expect(fx.state.principals.size).toBe(2);
 	});
 
 	it("does not consume the idempotency-scoped section for alreadyRegistered", () => {

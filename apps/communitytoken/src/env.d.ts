@@ -10,9 +10,9 @@
  * fail closed when one is unset rather than failing to type-check.
  */
 interface Env {
-	/** Bearer credential asserting the `admin-api` principal. */
+	/** Bearer credential asserting the `admin-api` technical caller. */
 	ADMIN_API_TOKEN?: string;
-	/** Bearer credential asserting the `discord-adapter` principal. */
+	/** Bearer credential asserting the `discord-adapter` technical caller. */
 	DISCORD_ADAPTER_SERVICE_TOKEN?: string;
 	/** Trusted OIDC issuer URL (absolute HTTPS, no trailing slash). */
 	OIDC_ISSUER_URL?: string;
@@ -24,9 +24,9 @@ interface Env {
 
 declare namespace Cloudflare {
 	interface Env {
-		/** Bearer credential asserting the `admin-api` principal. */
+		/** Bearer credential asserting the `admin-api` technical caller. */
 		ADMIN_API_TOKEN?: string;
-		/** Bearer credential asserting the `discord-adapter` principal. */
+		/** Bearer credential asserting the `discord-adapter` technical caller. */
 		DISCORD_ADAPTER_SERVICE_TOKEN?: string;
 		/** Trusted OIDC issuer URL (absolute HTTPS, no trailing slash). */
 		OIDC_ISSUER_URL?: string;

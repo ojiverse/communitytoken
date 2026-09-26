@@ -14,7 +14,9 @@
 		"@communitytoken/economic-kernel": "workspace:*"
 	},
 	"devDependencies": {
+		"@communitytoken/economic-contract": "workspace:*",
 		"@tsconfig/strictest": "2.0.8",
+		"@types/node": "24.3.0",
 		"typescript": "7.0.2",
 		"vitest": "4.1.11"
 	}

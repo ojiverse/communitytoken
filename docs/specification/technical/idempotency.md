@@ -1,59 +1,53 @@
 # Idempotency
 
-Idempotency protects mutation requests from duplicate delivery.
+Idempotency protects application mutation requests from duplicate delivery.
 
-It is a transport/application consistency guarantee. It does not decide whether two independently
-identified commands are equivalent under an external feature's business rules.
+It is a transport and application consistency guarantee, not a primitive monetary rule and not a
+feature-domain uniqueness rule.
 
 ## Scope
 
-An idempotency key is interpreted within the authenticated service-principal namespace.
+An idempotency key is interpreted within the authenticated technical-caller namespace.
 
-The pair:
-
-(service principal, idempotency key)
-
-identifies one logical mutation request.
+The caller namespace and idempotency key together identify one logical mutation request.
 
 ## Request equivalence
 
 Each idempotency scheme version defines a deterministic fingerprint of the logical request.
 
-For the same version:
-
-- semantically identical protected request content must produce the same fingerprint;
-- a materially different request must produce a different fingerprint.
+For one version, semantically identical protected request content must produce the same fingerprint,
+while materially different protected content must produce a different fingerprint.
 
 Credentials and the idempotency key itself are not part of request meaning.
 
-The concrete canonicalization and digest representation are implementation contract details and are
-tracked with the interface implementation.
+Concrete canonicalization and digest representation belong to the interface implementation contract.
 
 ## Replay
 
-For a previously completed key:
+When a completed key is seen again with the same version and fingerprint, the stored result is
+returned without re-executing the mutation.
 
-- matching version and fingerprint returns the stored result without re-executing the mutation;
-- a mismatching fingerprint is rejected as key reuse.
+Reusing the same key with different protected content is rejected.
 
-The stored result is the authority for successful replay.
+The stored result is authoritative for a successful replay.
 
-An expected non-mutating failure is not made into a successful replay record merely because an
-idempotency key was presented.
+An expected non-mutating failure does not become a successful replay record merely because a key was
+presented.
 
 ## Atomicity
 
-The protected mutation and the replay record describing its committed result are one transaction.
+A protected successful mutation and the replay record describing that committed result are one
+atomic application transaction.
 
-There must be no committed state in which the protected mutation succeeded but its replay result was
-not recorded.
+There must be no committed state in which the protected monetary Transaction succeeded while the
+successful replay result was not recorded.
 
-A failed domain operation must not consume independent business eligibility or become a successful
-mutation record merely because an idempotency key was presented.
+A failed primitive or application operation must not consume independent feature eligibility or
+become a successful mutation record merely because an idempotency key was supplied.
 
 ## Retention
 
-The current model has no idempotency-record expiry transition.
+The current model defines no idempotency-record expiry transition.
 
-Adding expiry or deletion requires an explicit specification change because it changes replay
-guarantees.
+Adding expiry or deletion changes replay guarantees and therefore requires an explicit specification
+decision.

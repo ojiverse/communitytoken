@@ -2,51 +2,59 @@
 
 CommunityToken identity is independent of interaction surface and identity provider.
 
-## Concepts
+## Principal
 
-A **User** is the stable internal identity anchor.
+Principal is the stable internal identity anchor.
 
-An **ExternalIdentity** is the exact ordered pair:
+A Principal is not assumed to be a human. It may later represent a non-human or institutional subject
+without changing the primitive ledger model.
 
-(issuer, subject)
+The economic core does not define Principal subtypes.
 
-An **IdentityBinding** associates exactly one ExternalIdentity with exactly one User.
+## ExternalIdentity
 
-A User may have more than one IdentityBinding.
+An ExternalIdentity is the exact ordered pair of issuer and subject.
 
-## Invariants
+The full pair is the identity key. Subject alone is insufficient.
 
-1. A User identifier is not an external subject identifier.
-2. An ExternalIdentity is identified by the complete pair (issuer, subject).
-3. No two Users may be bound to the same ExternalIdentity.
-4. Identity is never inferred from email, username, display name, avatar, role, or other mutable profile data.
-5. Wallets, economic history, and feature state belong to the User, not to an ExternalIdentity.
-6. Adding another identity provider must not require replacing the User or moving the User's economic state.
+An external identity value is provider evidence and must not be reused as the internal Principal
+identifier.
 
-Formally, let E be ExternalIdentities and U be Users.
+## IdentityBinding
 
-binding: E -> U
+IdentityBinding associates exactly one ExternalIdentity with exactly one Principal.
 
-is a partial function.
+No two Principals may be bound to the same ExternalIdentity.
 
-Thus:
+One Principal may have more than one IdentityBinding.
 
-for every e in E, there exists at most one u in U such that binding(e) = u.
+Identity is never inferred from email address, username, display name, avatar, role, or another
+mutable profile attribute.
 
-The inverse relation need not be functional: one User may have multiple bound ExternalIdentities.
+Accounts, Transaction history, and feature or simulation state belong to the internal Principal or
+the owning layer, not to mutable external profile data.
 
 ## Binding lifecycle
 
-In the current domain, a binding has no disabled or detached state.
+The current domain has no disabled or detached binding state.
 
 A binding either exists and is active, or does not exist.
 
-There is no transition that silently reassigns an existing ExternalIdentity to another User.
+An existing ExternalIdentity is never silently reassigned to another Principal.
 
-Any future unlinking, disabling, or reassignment semantics require a new explicit domain decision.
+Future unlinking, disabling, merge, or reassignment behavior requires an explicit domain decision.
+
+## Provider independence
+
+Adding another identity provider must not require replacing the Principal or moving its Accounts and
+monetary history.
+
+The current beta registers through Discord-backed OIDC, but that product choice does not make
+Discord identity part of the Principal definition.
 
 ## Sessions
 
-A session is a surface-specific authentication mechanism, not identity truth.
+A session is an authentication mechanism, not identity truth.
 
-Creating or destroying a session must not create, replace, merge, or move a User identity.
+Creating or destroying a session must not create, replace, merge, or move a Principal or
+IdentityBinding.

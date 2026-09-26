@@ -2,50 +2,59 @@
 
 This directory contains the normative specifications of CommunityToken.
 
-Specifications define what must remain true. They do not prescribe source-code structure,
-database DDL, runtime products, package names, deployment commands, test fixtures, or rollout
-steps. Those choices belong to implementation issues and pull requests.
+Specifications define semantics and invariants that implementation must preserve. They do not
+prescribe source layout, database DDL, runtime products, package names, deployment commands, or
+rollout steps.
 
 ## Authority
 
-Within the scope fixed by the project roadmap, these documents are the source of truth for
-domain meaning and system-boundary invariants.
+Within the roadmap scope, these documents are the semantic source of truth.
 
-If an implementation issue or pull-request description conflicts with a specification, the
-specification wins for semantics and invariants. The implementation plan must be corrected.
+Architecture issue #17 fixes the current primitive boundary: Principal, Account, Transaction, ISSUE,
+and TRANSFER.
 
-Discussion comments are decision history, not normative specification. A semantic decision becomes
-normative when it is incorporated into the owning document here.
+When current implementation disagrees with a specification, the implementation is migration residue
+or a defect unless an explicit architecture decision changes the specification first.
+
+Discussion threads and implementation issues are decision history and work planning. A semantic
+decision becomes normative when it is incorporated into the owning specification here.
 
 ## Progressive disclosure
 
-Start with the smallest relevant layer.
+Read only the smallest layer required by the change.
 
-1. Read [Domain Specifications](./domain/README.md) to understand what the product means.
-2. Read only the domain document that owns the concept you are changing.
-3. Read [Technical Specifications](./technical/README.md) when the change crosses a system boundary.
-4. Consult implementation issues only after the invariant is understood.
+Start with the domain index. Read the domain document that owns the concept being changed. Read the
+technical index when the change crosses persistence, authentication, registration, time, idempotency,
+or transaction boundaries. Consult ADRs for architectural rationale after the invariant is clear.
 
-A reader implementing a feature should not need to read every specification.
+A feature or simulation consumer should not need to understand storage internals.
 
-## Domain versus technical specification
+## Domain and technical scope
 
-**Domain specifications** define concepts, valid states, state transitions, and product policy that
-must survive a change of runtime or storage technology.
+Domain specifications define runtime-independent concepts, valid states, monetary transitions,
+identity, authorization boundaries, and product visibility semantics.
 
-**Technical specifications** define guarantees at boundaries between components or trust domains.
-They may constrain ordering, atomicity, authentication, persistence, or time authority, but remain
-independent of a particular implementation mechanism.
+Technical specifications define guarantees across trust or component boundaries, including
+serialization, persistence, authentication, registration, idempotency, and authoritative time.
 
-A document should state an invariant rather than the mechanism currently used to enforce it.
+The primitive economic domain deliberately stops before product or simulation policy. A useful
+higher-level concept does not become a ledger primitive unless ISSUE or TRANSFER is insufficient to
+state a required monetary invariant.
+
+## Current migration
+
+The specification has moved to the primitive model before implementation migration #25.
+
+Source and schema on main may therefore temporarily contain superseded User, Wallet, Treasury,
+EconomicOperation, LedgerTransaction, or four-operation names. They have no normative authority.
+
+Do not extend those concepts while reconciling implementation.
 
 ## Change discipline
 
 A behavioral change that alters a normative invariant must update the owning specification in the
-same change that introduces the new behavior.
+same change that introduces the new semantics.
 
-Implementation-only changes should not edit these documents unless they reveal that the current
-specification is incomplete or incorrect.
+Implementation-only work should not modify these documents merely to describe mechanics.
 
-No specification in this directory should become an implementation manual. Concrete implementation
-instructions remain in the relevant GitHub issue.
+Specifications state enduring invariants, not instructions for a particular runtime.

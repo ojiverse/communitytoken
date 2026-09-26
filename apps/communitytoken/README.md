@@ -1,154 +1,114 @@
-# CommunityToken — production core
+# CommunityToken production application
 
-The production CommunityToken Worker and `CommunityState` Durable Object.
+This application is the production HTTP and persistence realization of CommunityToken.
 
-Current architecture authority: [#17](https://github.com/ojiverse/communitytoken/issues/17).
-Current roadmap: [#18](https://github.com/ojiverse/communitytoken/issues/18).
-Current Phase 2 tracker: [#19](https://github.com/ojiverse/communitytoken/issues/19).
+Architecture authority is GitHub issue #17. Phase 2 sequencing is owned by issue #19.
 
-```text
-Worker fetch (exact route match → Bearer auth → route-group
-              authorization → wire validation → fingerprint)
-  ↓  asserted service principal, never the credential
-CommunityState Durable Object   (single serialization authority,
-                                 idFromName("community"))
-  ↓
-SQLite-backed storage           (ctx.storage.sql)
-```
+## Current migration state
 
-CommunityToken is a feature-agnostic economic substrate. Feature-specific eligibility, cadence,
-scheduling, campaign state, or business uniqueness is outside this core.
+The normative target is Principal, Account, and Transaction with ISSUE and TRANSFER as the only
+primitive monetary transaction kinds.
 
-## Routes
+Documentation has moved to that model before production source and schema. Until issue #25 is merged,
+files in this application may still contain superseded User, Wallet, Treasury, EconomicOperation,
+LedgerTransaction, and four-operation terminology.
 
-The route set is exact `"METHOD pathname"` pairs — no trailing-slash or case normalization, and a
-wrong method on a known path is `404`. Unknown routes are `404 not_found`.
+Those names are implementation migration residue. Do not extend the superseded model while performing
+unrelated work.
 
-The namespace follows ADR-0002 (`docs/adr/0002-api-namespace.md`): the versioned command/query
-application API lives under `/api/v1/*`, its administrative-capability subset under
-`/api/v1/admin/*`, and protocol-ingress endpoints stay outside the API namespace.
+## Runtime responsibility
 
-| Route | Group | DO method |
-| --- | --- | --- |
-| `POST /api/v1/balance` | internal | `internalBalance` |
-| `POST /api/v1/history` | internal | `internalHistory` |
-| `POST /api/v1/transfers` | internal | `internalTransfer` (idempotent) |
-| `POST /api/v1/registration-intents` | internal | `apiCreateRegistrationIntent` (idempotent) |
-| `GET /auth/oidc/callback` | public | `getOidcRegistrationIntent` + `completeOidcRegistration` |
-| `POST /api/v1/admin/issuances` | admin | `adminIssue` |
-| `POST /api/v1/admin/distributions` | admin | `adminDistribute` |
-| `GET /api/v1/admin/treasury/balance` | admin | `adminTreasuryBalance` |
-| `GET /api/v1/admin/treasury/history` | admin | `adminTreasuryHistory` |
+The Worker owns transport ingress, authentication, authorization, request validation, and
+protocol-facing orchestration.
 
-Discord interaction ingress is owned by the separate Discord adapter application, not by this core
-Worker.
+CommunityState owns the single serialized durable mutation boundary. Durable state is currently
+implemented on Cloudflare SQLite storage.
 
-## Authentication boundary
+Cloudflare-specific mechanics remain outside the primitive domain contract.
 
-Two bearer credentials, provisioned as Worker secrets:
+## Primitive monetary model
 
-- `DISCORD_ADAPTER_SERVICE_TOKEN` asserts the `discord-adapter` principal, authorized for the
-  non-admin `/api/v1/*` routes.
-- `ADMIN_API_TOKEN` asserts the `admin-api` principal, authorized for
-  `/api/v1/admin/*` routes.
+The economic layer must converge to exactly two transitions.
 
-Authorization is explicit per-route group metadata, never pathname prefix matching. The Worker
-consumes the credential; route-facing DO methods receive only the asserted principal and re-check it
-against their route group as a misroute backstop.
+ISSUE credits one destination Account and increases total supply by the same amount.
 
-No match is `401 unauthorized`; an authenticated principal on the wrong group is
-`403 forbidden`. An unset/empty configured token never matches, and a credential matching both
-configured secrets is ambiguous and fails closed. Credential comparison hashes both sides and
-compares equal-length digests with `crypto.subtle.timingSafeEqual`.
+TRANSFER debits one source Account and credits one destination Account without changing total supply.
 
-The public `GET /auth/oidc/callback` route runs no Bearer authentication. It is an OIDC protocol
-endpoint whose outcomes are fixed static HTML pages, never JSON and never a redirect.
+Account roles do not participate in primitive monetary validity.
 
-## Request pipeline
+The application may designate one Account as the community reserve and may expose product use cases
+named issuance, distribution, transfer, or treasury inspection. Those names do not create additional
+Transaction kinds.
 
-Route match → authenticate → authorize → `Content-Type: application/json` (415) → JSON object body
-and exact wire shape (400 `invalid_request`; unknown fields are rejected) → `Idempotency-Key` on
-`POST /api/v1/transfers` and `POST /api/v1/registration-intents` → fingerprint v1 → DO call.
+## Identity
 
-Fingerprint v1 is SHA-256 over:
+An ExternalIdentity is the exact issuer and subject pair.
 
-```text
-"communitytoken-idempotency-v1\n"
-+ METHOD + "\n"
-+ path + "\n"
-+ RFC8785_JCS(parsed_body)
-```
+IdentityBinding associates an ExternalIdentity with one Principal. The current Discord-backed OIDC
+registration flow creates one Principal and one product-default Account on first successful
+registration.
 
-`POST /api/v1/registration-intents` additionally validates the OIDC configuration and requires the
-body's `issuer` to equal the configured trusted issuer.
+Principal is not synonymous with a human or Discord user.
 
-Expected failures return `{status, body}` descriptors; unexpected failures map to
-`500 internal_error`. Query parameters on POST routes are ignored. No CORS headers are added.
+## HTTP product surface
 
-## Environment surface
+The application currently exposes registration, self balance, self history, user transfer,
+administrative issuance, administrative distribution, and administrative reserve inspection.
 
-- `COMMUNITY_STATE` — the `CommunityState` Durable Object binding.
-- `ADMIN_API_TOKEN`, `DISCORD_ADAPTER_SERVICE_TOKEN` — secret bindings provisioned out-of-band.
-- `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` — OIDC relying-party
-  configuration. All three must be present and non-empty; the issuer must be absolute HTTPS without
-  query, fragment, or trailing slash. The client secret never leaves the Worker.
+The existing routes under the treasury namespace may remain during Phase 2 for product compatibility.
+Their spelling describes an application role only. It does not imply a treasury Account kind in the
+primitive model.
 
-Local development uses `.dev.vars` (ignored); see `.dev.vars.example`.
+Discord interaction ingress belongs to the separate Discord adapter Worker.
 
-## Structure
+## Authentication and authorization
 
-- `src/index.ts` — Worker entry delegating to `handleRequest`.
-- `src/http.ts` — routing, authorization groups, wire validation, and the `CommunityStateApi`
-  stub contract.
-- `src/auth.ts` — Bearer authentication and principal assertion.
-- `src/fingerprint.ts` — local RFC 8785 (JCS) canonicalization and fingerprint v1 digest.
-- `src/community-state.ts` — the singleton `CommunityState` Durable Object. Schema initialization
-  and treasury seeding run under `blockConcurrencyWhile`.
-- `src/schema.ts` — `users`, `wallets`, `economic_operations`, `ledger_transactions`,
-  `identity_bindings`, `idempotency_records`, and `registration_intents`, with storage-level
-  structural/immutability constraints. The economic operation-kind domain is exactly
-  `TOKEN_ISSUANCE`, `DISTRIBUTION`, `P2P_TRANSFER`, and `TREASURY_PAYMENT`.
-- `src/unit-of-work.ts` — production `UnitOfWork`, mapping the application atomic boundary onto
-  `ctx.storage.transactionSync`: one injected-clock sample per section, no nesting, permanently
-  revoked repository handles, and runtime rejection of Promise-like escapes.
-- `src/repositories.ts` — SQLite-backed repositories.
-- `src/oidc/` — Worker-owned OIDC relying-party protocol modules.
-- `src/registration.ts` — public callback orchestration and static browser response pages.
+The adapter credential and administrative credential are distinct technical authorities.
 
-## RPC surface
+The adapter may use the supported non-administrative product surface. Administrative issuance,
+distribution, and reserve inspection require administrative authority.
 
-Route-facing methods own their complete `uow.transact` section. Identity resolution, protected
-mutation, and any recordable idempotency result commit in the same serialized boundary.
+Authorization is an application concern. The primitive ledger does not infer authority from a
+Principal subtype, Account kind, source Account, or transaction direction.
 
-The public callback read/completion methods carry no service principal. Completion rechecks intent
-validity and exact verified identity inside one serialized section that resolves-or-creates the User,
-zero-balance wallet, and IdentityBinding while consuming the intent.
+OIDC validation proves ExternalIdentity during registration. The public OIDC callback does not use
+bearer authentication.
 
-Product use-case facade methods are:
+## Atomicity and idempotency
 
-```text
-issueToken
-distributeToken
-transferToken
-payTreasury
-getBalance
-getTransactionHistory
-```
+Every durable mutation executes in one serialized atomic section.
 
-Test-support RPCs remain unreachable from Worker `fetch`.
+A successful protected mutation and its replay record commit atomically. A rejected primitive
+transition creates neither a Transaction nor a balance change.
 
-## Invariants honored
+Idempotency protects duplicate delivery of one logical application request. It does not decide
+whether independently identified product or feature actions are business-domain duplicates.
 
-- Every durable mutation runs inside one `transactionSync` section.
-- `economic_operations`, `ledger_transactions`, `identity_bindings`, and
-  `idempotency_records` are append-only at the storage floor.
-- RegistrationIntent lifecycle constraints enforce fixed expiry, latest-wins active intent behavior,
-  immutable proof/identity columns, and terminal transitions.
-- Identity binding lookup is an exact `(issuer, subject)` match.
-- A successful protected transfer and its idempotency record commit in the same serialized section;
-  expected failures record nothing and leave the key retryable.
-- Monetary values round-trip exactly within the safe-integer domain.
-- The treasury is the singleton system wallet, seeded empty; initial funding is an explicit
-  `TOKEN_ISSUANCE`.
-- The unchanged `@communitytoken/economic-contract` suite remains the economic compatibility
-  contract.
+## Persistence target
+
+After issue #25, the durable model must represent at least Principal, Account, IdentityBinding,
+Transaction, registration intent state, and idempotency or application records.
+
+EconomicOperation and a separate one-to-one LedgerTransaction are not part of the target model.
+
+Fresh application initialization creates the designated community Principal and reserve Account at
+zero balance without creating supply. Initial supply is a later explicit ISSUE.
+
+## Source responsibilities
+
+The current source tree remains the implementation surface while issue #25 performs the migration.
+
+Transport code owns ingress. HTTP modules own routing, validation, authentication, and authorization.
+CommunityState owns serialized durable orchestration. Persistence modules own durable representation.
+OIDC modules own relying-party protocol mechanics. Runtime-independent packages own application and
+primitive monetary contracts.
+
+Do not preserve an obsolete type, table, or repository solely because it exists today.
+
+## Verification
+
+Tests must ultimately demonstrate primitive monetary invariants, identity binding, atomicity,
+idempotency, and supported product behavior.
+
+Cloudflare deployment topology and the separate Discord adapter are described by ADR-0003 and the
+Phase 2 rollout issues.

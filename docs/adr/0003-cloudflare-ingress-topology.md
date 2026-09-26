@@ -1,171 +1,125 @@
 # ADR-0003: Isolate Cloudflare resources by service while sharing one account
 
-- Status: Accepted
-- Date: 2026-09-25
-- Scope: Production Cloudflare service/resource topology
+Status: Accepted
+
+Date: 2026-09-25
+
+Last aligned with architecture: 2026-09-26
+
+Scope: Production Cloudflare service and resource topology
 
 ## Context
 
-CommunityToken and future feature services/plugins may run in one OJIverse Cloudflare account for
-operational simplicity. Account co-location must not collapse application, trust, or persistence
-boundaries.
+CommunityToken, its Discord adapter, and future feature or simulation services may run in one
+OJIverse Cloudflare account for operational simplicity.
 
-Cloudflare bindings grant a Worker direct capability to platform resources. Resource bindings are
-therefore part of service authority, not shared account-wide infrastructure.
+Account co-location must not collapse application, trust, or persistence boundaries. A Cloudflare
+binding grants direct capability to a platform resource, so bindings are part of service authority.
 
-The current public ingress also needs two independently deployable Workers on one hostname:
-CommunityToken core at `token.ojiver.se` and the Discord adapter at
-`token.ojiver.se/interactions`.
+The public deployment also needs two independently deployable Workers on one hostname: CommunityToken
+for the application surface and the Discord adapter for the exact interactions path.
 
 ## Decision
 
-Use one OJIverse Cloudflare account as the operational container while keeping every deployable
-service/plugin independently owned at the Worker and resource-binding level.
+Use one OJIverse Cloudflare account as the operational container while keeping deployable services
+independently owned at the Worker and resource-binding level.
 
-```text
-Cloudflare account
-├ CommunityToken core
-│  ├ Worker
-│  ├ CommunityState Durable Object namespace
-│  ├ core-owned secrets/config
-│  └ token.ojiver.se
-├ Discord adapter
-│  ├ Worker
-│  ├ adapter-owned secrets/config
-│  └ token.ojiver.se/interactions
-└ feature/plugin
-   ├ Worker
-   ├ plugin-owned state/resources
-   └ plugin-specific core credential when required
-```
+CommunityToken owns its Worker, CommunityState Durable Object namespace, persistence, secrets, and
+the token.ojiver.se application origin.
 
-The shared account is an operational boundary only. It does not imply shared mutable state or shared
-runtime authority.
+The Discord adapter owns its Worker and adapter-specific configuration and is attached only to the
+interactions path.
 
-## Resource ownership
+Future feature or simulation services own their own state and receive only the application authority
+required by their concrete use case.
 
-Every mutable Cloudflare resource has one owning service/plugin. A service may bind resources required
-by its domain, such as Durable Objects, D1, KV, R2, Queues, Workflows, or scheduled triggers.
+The shared account is an operational boundary only. It does not imply shared mutable state.
 
-A plugin is not required to use the same persistence architecture as CommunityToken or another
-plugin. Resource names and Wrangler configuration should make owner and environment apparent where
-practical.
+## Persistence isolation
 
-## CommunityToken persistence isolation
+Only CommunityToken may receive bindings granting direct access to CommunityToken persistence.
 
-Only CommunityToken core may receive bindings granting direct access to CommunityToken economic
-persistence.
+Other services must not receive the CommunityState binding, direct SQLite access, or future
+CommunityToken-owned persistence bindings.
 
-Other services/plugins must not receive:
+They must not import persistence implementation in order to mutate Principal, Account, Transaction,
+IdentityBinding, or application state.
 
-- the `COMMUNITY_STATE` Durable Object binding;
-- direct access to CommunityToken SQLite state;
-- a CommunityToken-owned D1/KV/R2/Queue binding if one is introduced later;
-- imports that bypass the supported CommunityToken application/protocol boundary to mutate core
-  persistence.
-
-A plugin that needs to cause an economic transition requests a supported CommunityToken operation. It
-does not directly mutate wallet, ledger, operation, identity, or treasury state.
+A service that needs monetary movement requests an authorized application operation that eventually
+produces ISSUE or TRANSFER.
 
 ## Cross-service integration
 
-Cross-service integration uses explicit application or protocol boundaries.
+The default integration boundary is the authenticated CommunityToken HTTP application API.
 
-For CommunityToken, the default integration boundary is its authenticated HTTP application API.
-Cloudflare account co-location must not become a shortcut to direct database/resource access.
+Cloudflare account co-location must not become a shortcut to shared storage.
 
-A Service Binding is not part of the CommunityToken application contract. It may be reconsidered as a
-transport optimization only when a concrete requirement justifies the added deployment coupling.
+A Service Binding may be reconsidered later as a transport choice only when a concrete requirement
+justifies the additional deployment coupling. It does not redefine application semantics.
 
-## Feature/plugin responsibility
+## Feature and simulation responsibility
 
-A feature/plugin owns its feature-domain state and policy. For example, a future Daily plugin may own
-DailyRewardPolicy, DailyRewardWindow, and DailyRewardClaim in resources bound only to that plugin.
+Feature services own feature policy and state such as eligibility, cadence, claims, campaigns, and
+product provenance.
 
-CommunityToken sees only the authorized generic economic command, such as `DISTRIBUTION`. The plugin
-decides why, when, how often, and for whom that command is requested.
+Simulation services own scenario definitions, behavioral agents, policy state, and simulation
+provenance.
+
+Neither layer may redefine Account roles as primitive ledger types or bypass CommunityToken
+persistence. Higher-level records may reference resulting Transaction identifiers.
 
 ## Authorization
 
 Resource isolation does not replace application authorization.
 
-A future plugin that needs CommunityToken authority receives only the smallest core capability
-required by its concrete use case. Do not grant `admin-api` merely because both services run in the
-same Cloudflare account.
+A future service receives only the smallest authority required by its concrete use case. Running in
+the same Cloudflare account is never sufficient reason to grant administrative economic authority.
 
-Do not prebuild generic RBAC or a plugin capability framework before a concrete consumer requires it.
-
-Runtime credentials should be service-specific where practical. Deployment credentials should also
-be scoped per deployable service when the platform/IAM configuration permits it.
+Generic RBAC or plugin infrastructure is not introduced before a concrete consumer requires it.
 
 ## Current ingress realization
 
-For Phase 2:
+CommunityToken is attached as the Custom Domain token.ojiver.se.
 
-```text
-token.ojiver.se
-├ /interactions
-│  -> Discord adapter Worker Route
-└ all other paths
-   -> CommunityToken Custom Domain Worker
-```
+The Discord adapter is attached as the exact Worker Route token.ojiver.se/interactions.
 
-CommunityToken is attached as the Custom Domain `token.ojiver.se`.
+The adapter calls CommunityToken through ordinary HTTPS requests to token.ojiver.se. Because the
+adapter owns only the exact interactions path, calls to the application API reach the CommunityToken
+origin.
 
-The Discord adapter is attached as the exact Worker Route
-`token.ojiver.se/interactions`.
+The Phase 2 topology deliberately avoids a wildcard adapter route, global public-fetch compatibility
+flags, and a Service Binding.
 
-The adapter calls CommunityToken with ordinary HTTPS `fetch()` to
-`COMMUNITYTOKEN_BASE_URL=https://token.ojiver.se`.
-
-This relies on Cloudflare behavior where a Worker Route may run before a Custom Domain Worker on the
-same hostname and same-zone Worker `fetch()` may target a Worker on a Custom Domain.
-
-Do not use a wildcard adapter route, `global_fetch_strictly_public`, or a Service Binding for this
-Phase 2 topology. Production verification belongs to issue #22.
+Production verification belongs to issue #22.
 
 ## Consequences
 
-Benefits:
+The account remains operationally simple while direct resource authority stays visible in each
+service's bindings.
 
-- billing, zone management, and deployment operations stay in one account;
-- direct resource authority remains visible in each Worker's bindings;
-- plugin state/schema changes do not require sharing CommunityToken persistence;
-- a plugin can later move to another account/runtime without changing core domain semantics if the
-  application protocol remains available.
+Plugin or simulation state changes do not require sharing CommunityToken persistence.
 
-Costs:
+A service can later move to another account or runtime without changing the primitive economic model
+as long as the supported application contract remains available.
 
-- services in one account remain operationally correlated;
-- cross-service calls keep an explicit application boundary instead of shared storage;
-- each plugin may need its own resource lifecycle, migrations, credentials, and monitoring.
+The cost is that each service owns its own deployment, credentials, migrations, and monitoring.
 
 ## Rejected alternatives
 
-### Shared database with service-owned tables
+A shared database was rejected because storage representation would become the integration boundary.
 
-Rejected because the database would become the integration boundary and expose persistence
-representations across services.
+Binding CommunityToken persistence directly into plugins or simulations was rejected because it
+bypasses authorization and atomicity.
 
-### Bind CommunityToken persistence into plugins
+Separate Cloudflare accounts for every service are not required initially, though a future
+administrative or blast-radius requirement may justify them.
 
-Rejected because it bypasses core economic/identity authorization and atomicity.
-
-### Separate Cloudflare account for every plugin
-
-Not required initially. Account separation may be introduced for a concrete administrative, billing,
-regulatory, blast-radius, or ownership requirement.
-
-### Service Binding as the default plugin/core contract
-
-Rejected as the default because it couples integration to the Cloudflare deployment topology.
-Application semantics remain defined by the supported CommunityToken protocol boundary.
+A Service Binding is not the default contract because it couples integration to the current platform
+topology.
 
 ## Documentation boundary
 
-This ADR records Cloudflare-specific architecture rationale.
+This ADR records Cloudflare-specific architectural rationale.
 
-Runtime-independent domain/system semantics remain under `docs/specification/`.
-
-Verified deployment, secret provisioning, and operator procedures belong under `docs/operations/`
-and must not be copied into the normative specification tree.
+Runtime-independent semantics remain under docs/specification. Verified deployment and secret
+provisioning belong in operations documentation rather than normative specifications.

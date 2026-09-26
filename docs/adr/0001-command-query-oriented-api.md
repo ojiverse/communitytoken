@@ -1,164 +1,99 @@
 # ADR-0001: Prefer command/query-oriented application APIs over resource-oriented CRUD APIs
 
-- Status: Accepted
-- Date: 2026-09-21
-- Scope: CommunityToken trusted core API
+Status: Accepted
+
+Date: 2026-09-21
+
+Last aligned with architecture: 2026-09-26
+
+Scope: CommunityToken trusted application API
 
 ## Context
 
-CommunityToken persists resources and entities such as Users, Wallets, IdentityBindings,
-EconomicOperations, LedgerTransactions, idempotency records, and registration state.
+CommunityToken persists state such as Principals, Accounts, IdentityBindings, Transactions,
+idempotency records, and registration state.
 
-Those resources are not, however, the primary abstraction that callers are allowed to mutate.
-CommunityToken's primary responsibility is to validate and execute a small set of domain-defined
-state transitions while preserving economic, identity, authorization, idempotency, and transactional
-invariants.
+Those records are not independently mutable resources exposed to callers. The system accepts
+application commands and queries, applies authorization and domain rules, and commits only valid
+state transitions.
 
-Examples include token issuance, treasury distribution, user transfer, treasury payment, and
-registration. A wallet balance, ledger row, or identity binding changes only as a consequence of an
-allowed operation; callers do not submit an arbitrary desired representation of those resources.
+The primitive economic architecture now reduces monetary validity to ISSUE and TRANSFER, but that
+reduction strengthens rather than weakens this decision. Product operations such as registration,
+administrative issuance, administrative distribution, user transfer, balance, and history still
+have application semantics that cannot be represented safely as arbitrary record mutation.
 
-The Phase 2 design also requires an adapter to present an ExternalIdentity and execute the delegated
-user action in one trusted request. Splitting identity resolution from execution would create an
-unwanted resolve-then-act-as protocol and would weaken the boundary between external identity and
-internal User authority.
-
-Earlier Phase 2 design discussion therefore described the trusted boundary in terms of delegated
-use-case endpoints and route-facing Durable Object orchestration rather than generic resource
-manipulation. See the historical issue #4 comments
-[#5696687006](https://github.com/ojiverse/communitytoken/issues/4#issuecomment-5696687006),
-[#5696910043](https://github.com/ojiverse/communitytoken/issues/4#issuecomment-5696910043), and
-[#5724094688](https://github.com/ojiverse/communitytoken/issues/4#issuecomment-5724094688).
-
-The current feature-agnostic core boundary is tracked separately in
-[architecture issue #17](https://github.com/ojiverse/communitytoken/issues/17).
+The trusted boundary also resolves an ExternalIdentity to a Principal and performs the authorized
+action in one application request. Exposing a generic resolve-then-impersonate protocol would weaken
+the identity boundary.
 
 ## Decision
 
-The CommunityToken trusted core API is a command/query-oriented application API.
+The trusted CommunityToken API is command/query oriented.
 
-The API exposes meaningful application operations rather than a generic CRUD surface over persisted
-resources.
+Commands request meaningful application transitions. Queries request application-defined
+projections.
 
-Commands request a domain-defined state transition, for example:
+The API does not expose general create, update, or delete authority over Principal, Account,
+IdentityBinding, Transaction, or persistence records.
 
-- issue tokens;
-- distribute treasury reserve;
-- transfer tokens between Users;
-- initiate or complete registration.
+The primitive ledger remains below this boundary. Application commands translate authorized product
+intent into ISSUE or TRANSFER rather than allowing callers to set balances or insert Transaction
+history directly.
 
-Queries request an application-defined observation, for example:
+## Why commands remain meaningful
 
-- read the requesting User's balance;
-- read the requesting User's history;
-- inspect treasury balance or history with administrative authority.
+A primitive Transaction records the monetary fact but does not contain product reason, actor,
+eligibility, or institutional role.
 
-HTTP is the transport and boundary protocol for these operations. Endpoint paths and methods are not
-required to model a REST resource hierarchy or expose a uniform CRUD interface.
+That higher-level meaning belongs to the application or feature that requested the primitive
+transition. A command therefore remains the correct boundary for expressing product intent without
+polluting the ledger.
 
-Persistent resources remain part of the domain and storage models, but they are not independently
-mutable through the trusted API. In particular, the API must not expose operations equivalent to
-setting a Wallet balance, inserting ledger history, moving an IdentityBinding, or otherwise
-constructing a desired persisted state directly.
+Administrative distribution is a useful example. At the ledger layer it is simply TRANSFER from the
+application-designated reserve Account to a recipient Account. At the application boundary it still
+has distinct authorization, recipient resolution, visibility, and error semantics.
 
-The authoritative mutation shape is:
+## Invalid intermediate states
 
-```text
-authenticated principal
-  + command
-  + current state
-  + domain and authorization invariants
-  -> accepted state transition
-     or explicit rejection
-```
+Economic and identity changes may span multiple durable records.
 
-The authoritative read shape is:
+A valid registration may create a Principal, default Account, IdentityBinding, and consume a
+registration intent atomically. A protected transfer may update balances, append one Transaction,
+and persist an idempotency result atomically.
 
-```text
-authenticated principal
-  + query
-  + visibility rules
-  -> application-defined projection
-```
+Generic CRUD would expose partial states that are not valid application outcomes. Command
+orchestration keeps those transitions indivisible.
 
-The URL namespace does not define resource ownership or security authority. Authentication and
-authorization of the asserted principal remain authoritative. The concrete HTTP namespace is defined
-separately by ADR-0002 so this decision remains about the application API model rather than a
-particular path layout.
+## Identity delegation
 
-## Rationale
+An authenticated adapter may assert the ExternalIdentity associated with a user-facing action.
 
-### State transitions carry the domain meaning
+CommunityToken resolves that identity to a Principal and performs the authorized application action
+inside the trusted boundary. The adapter does not receive a reusable internal Principal identifier
+that functions as an impersonation credential.
 
-A balance changing from 100 to 90 is not sufficient domain information. The important fact is which
-valid operation caused that transition, who acted, which invariant checks succeeded, and which
-operation and ledger records were committed with it.
+## Idempotency
 
-Commands preserve that meaning at the API boundary. Generic resource updates would force the core to
-reconstruct intent from a desired state or would permit callers to bypass the operation semantics
-entirely.
+Idempotency belongs to one logical mutation command at the application boundary.
 
-### Invalid intermediate states should not be expressible
-
-Economic and identity state is constrained across multiple persisted records. A valid operation may
-need to update balances, append an EconomicOperation and LedgerTransaction, record idempotency state,
-or create User, Wallet, and IdentityBinding state atomically.
-
-Exposing those records as independently mutable resources would make invalid partial transitions
-part of the API model. A procedural command can instead own the complete atomic transition.
-
-### Audit history is operation-centric
-
-CommunityToken's ledger and EconomicOperation history explain why current economic state exists. The
-core operation therefore remains first-class input.
-
-This does not require the core to model every external feature reason as a distinct operation kind.
-When an existing core transition already expresses the economic effect, feature-specific eligibility,
-cadence, or business classification stays outside the core.
-
-### Delegation should remain one trusted operation
-
-An authenticated adapter may assert an ExternalIdentity for a user action, but the core resolves that
-identity to the User and executes the action in the same trusted request and serialized boundary.
-A generic identity-resolution resource followed by a second act-as request is deliberately absent.
-
-### Idempotency belongs to operations
-
-Retry protection is naturally scoped to one logical core mutation command. Recording and replaying
-the result of the protected operation in the same transaction is clearer than attaching idempotency
-semantics to arbitrary resource replacement.
-
-Idempotency does not make the core responsible for deciding whether independently identified
-commands are business-domain duplicates for an external feature.
+It protects duplicate delivery and is committed consistently with the protected mutation. It does
+not infer whether two different feature requests are semantically the same business event.
 
 ## Consequences
 
-- API endpoints may look procedural or RPC-like rather than conventionally RESTful.
-- Reads may use route shapes chosen for the delegation/query contract rather than for resource
-  retrieval aesthetics.
-- Adding a persisted entity does not imply adding CRUD endpoints for it.
-- New mutation endpoints should name a meaningful core domain/application operation and delegate to
-  one authoritative transition path.
-- Feature-specific policy does not imply a new core endpoint or operation kind when an existing core
-  transition already expresses the required state change.
-- New query endpoints should expose only projections allowed by visibility and authorization policy.
-- HTTP semantics still matter: authentication, authorization, media types, status codes,
-  idempotency, and error contracts remain explicit and stable.
-- A future external or resource-oriented API may be added as another adapter, but it must translate
-  requests into the same commands and queries rather than gaining direct mutation authority over
-  persistence.
-- RESTful design remains appropriate for a subsystem whose actual responsibility is resource
-  lifecycle management; this ADR applies because CommunityToken's trusted core is primarily a
-  constrained state-transition system.
+Application endpoints may look procedural rather than resource-oriented.
 
-## Rejected alternative: generic resource-oriented CRUD API
+Adding a persisted entity does not imply adding CRUD endpoints for it.
 
-A generic resource-oriented API would expose persisted state such as Wallets, bindings, or ledger
-records as the primary mutable interface.
+Adding a feature reason does not imply adding a new primitive Transaction kind when ISSUE or TRANSFER
+already describes the monetary effect.
 
-That shape is rejected for the trusted core because it places storage representation ahead of domain
-operations, makes authorization and invariant ownership less explicit, and creates mutation forms
-that CommunityToken should never permit directly.
+A future external API may present a different interface, but it must translate requests into the same
+authorized application boundary rather than gaining direct persistence authority.
 
-This does not mean resources are absent from the model. It means resource representation is not the
-authority for changing domain state.
+## Rejected alternative
+
+A generic CRUD API would make persistence representation the primary mutation contract.
+
+That would expose states callers should never be able to construct directly, obscure authorization
+ownership, and couple clients to implementation details. It remains rejected.

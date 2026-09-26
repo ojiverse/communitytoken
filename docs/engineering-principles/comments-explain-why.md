@@ -1,50 +1,45 @@
 # Comments Explain Why
 
-Comments are one of the hardest forms of repository data to maintain. They are unstructured natural
-language: the compiler cannot verify them, refactoring tools cannot reliably update them, and their
-meaning can become ambiguous as the implementation changes.
+Comments are expensive repository state.
 
-Every comment therefore introduces a maintenance obligation. Comments should be rare and reserved
-for important design or implementation knowledge that cannot be expressed clearly through types,
-names, structure, executable behavior, or a formal configuration.
+The compiler cannot verify them, refactoring tools update them imperfectly, and prose can remain
+plausible after the code it described has changed.
+
+Comments should therefore preserve rationale that cannot be expressed clearly through names, types,
+structure, tests, specifications, or configuration.
 
 ## Division of responsibility
 
-| Artifact | Responsibility | Question answered |
-| --- | --- | --- |
-| Docstring | The contract visible to a caller | What does this abstraction provide? |
-| Implementation | The mechanics expressed by the code | How does it provide it? |
-| Comment | The rationale that is not recoverable from the code | Why was this choice necessary? |
+A public contract explains what an abstraction guarantees.
 
-A docstring should describe the relevant contract, not narrate the function body. The implementation
-should make its operation understandable through explicit types, names, boundaries, and control
-flow. A comment should preserve the reason behind a choice among plausible alternatives.
+Implementation shows how the guarantee is achieved.
 
-## What comments should preserve
+A comment explains why a non-obvious implementation choice is necessary when that reason cannot be
+recovered from the surrounding design.
 
-A valuable comment records context such as:
+## Good reasons to comment
 
-- an external constraint that forced a non-obvious choice;
-- why an apparently simpler or more conventional alternative is invalid;
-- a tradeoff whose consequences are not visible in the implementation;
-- the reason changing or removing the code would violate an invariant.
+A comment is useful when it records an external constraint, a rejected but plausible implementation,
+a non-obvious tradeoff, or the reason removing a piece of code would violate an invariant.
 
-The comment should contain enough reasoning for a future maintainer to evaluate whether the
-constraint still applies. It should not merely label the chosen technique.
+The comment should contain enough context for a future maintainer to determine whether the reason
+still applies.
 
-## What comments should not repair
+## What comments should not do
 
-Do not use comments to paraphrase statements, restate types, describe control flow, or compensate
-for unclear implementation. If the code does not communicate what it does, improve the model,
-names, decomposition, or implementation first.
+Comments should not paraphrase statements, restate types, narrate control flow, preserve obsolete
+architecture, or compensate for unclear names and decomposition.
 
-Before adding a comment, ask:
+When code and current specification disagree, adding a comment that explains the old model does not
+repair the mismatch.
 
-- Can this knowledge be encoded in the type system or program structure?
-- Can clearer code make the explanation unnecessary?
-- Does the comment explain why one valid-looking option had to be chosen over another?
-- Would removing this rationale make a future incorrect change materially more likely?
-- Is the rationale important and stable enough to maintain with the code?
+Improve the model or implementation instead.
 
-Comments are the last representation to choose, but the most important irreducible rationale is
-exactly what they should preserve.
+## Decision test
+
+Before adding a comment, ask whether the knowledge can be represented structurally, whether clearer
+code would make the prose unnecessary, whether the rationale is stable, and whether losing it would
+make a future incorrect change materially more likely.
+
+Comments are the last representation to choose, but they are valuable when they preserve essential
+reasoning that no stronger mechanism can express.

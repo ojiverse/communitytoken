@@ -1,84 +1,87 @@
 # Economic State
 
-This document defines the state on which economic transitions operate.
+This document defines the authoritative monetary state and the entities on which primitive
+transactions operate.
 
-## Entities
+## Principal
 
-A **User** is the stable internal owner of exactly one user wallet.
+A Principal is a stable internal owner of Accounts.
 
-A **Wallet** holds a token balance and has exactly one of two kinds:
+The domain does not classify a Principal as human, bot, AI agent, service, organization, community,
+system, or any other subtype.
 
-- a user wallet, owned by exactly one User;
-- the treasury, the unique system wallet and owned by no User.
+A Principal may own zero or more Accounts at the primitive-model level. Product policy may require
+particular Accounts to exist for particular application flows.
 
-An **EconomicOperation** records the semantic reason an accepted economic transition occurred.
+Principal identifiers are opaque and are not external-provider identifiers.
 
-A **LedgerTransaction** records the movement associated with one EconomicOperation.
+## Account
 
-The initiator of an operation is defined separately in
-[Actor and Visibility](./actor-and-visibility.md).
+An Account is a balance container.
+
+Every Account has exactly one owning Principal and exactly one balance.
+
+There is no primitive Account kind. Terms such as user account, treasury, reserve, escrow, or system
+account describe application or scenario roles and do not alter monetary validity.
+
+No Account may exist without an owning Principal.
+
+## Transaction
+
+A Transaction is one accepted immutable monetary transition.
+
+There are exactly two Transaction kinds: ISSUE and TRANSFER.
+
+An ISSUE identifies one destination Account and one amount.
+
+A TRANSFER identifies one source Account, one destination Account, and one amount.
+
+Transaction identity and commit time are durable facts. Actor, feature reason, campaign, policy,
+institutional role, and simulation provenance are not primitive Transaction semantics.
+
+Higher-level records may reference a Transaction identifier when they need to retain those meanings.
 
 ## Structural invariants
 
-Let:
+Every Account belongs to exactly one Principal.
 
-- U be the set of Users;
-- W be the set of Wallets;
-- O be the ordered sequence of EconomicOperations;
-- L be the ordered sequence of LedgerTransactions;
-- owns: U -> W map each User to the User's wallet;
-- kind: W -> {user, system};
-- balance: W -> Z.
+Every Transaction refers only to Accounts that existed for that accepted transition.
 
-The following must always hold:
+An ISSUE has no source Account.
 
-1. There exists exactly one wallet T such that kind(T) = system.
-2. T is the treasury.
-3. Every User owns exactly one wallet of kind user.
-4. No two Users own the same wallet.
-5. A wallet of kind system has no User owner.
-6. A wallet of kind user has exactly one User owner.
-7. Every LedgerTransaction belongs to exactly one EconomicOperation.
-8. Every EconomicOperation has exactly one LedgerTransaction under the current economic model.
-9. Existing economic history is never rewritten to express a later correction.
+A TRANSFER has both source and destination Accounts.
+
+Committed Transaction history is immutable. A later correction is represented by a later valid
+Transaction rather than rewriting historical monetary facts.
 
 ## Monetary domains
 
-Let M = 2^53 - 1.
+The current maximum monetary value is two to the power of fifty-three minus one.
 
-TokenAmount = { a in Z | 1 <= a <= M }
+A transaction amount is an integer from one through that maximum value.
 
-WalletBalance = { b in Z | 0 <= b <= M }
+An Account balance is an integer from zero through that maximum value.
 
-TotalSupply = { s in Z | 0 <= s <= M }
+Total supply is an integer from zero through that maximum value.
 
-Every operation amount belongs to TokenAmount.
-
-Every wallet balance belongs to WalletBalance.
+Every accepted transition must leave all affected balances and total supply inside those domains.
 
 ## Supply
 
-Define:
+Total supply is the sum of all Account balances.
 
-supply(S) = sum of balance(w) for every w in W
+Because the current model has no burn primitive, total supply is also the sum of amounts of all
+committed ISSUE Transactions.
 
-issued(S) =
-  sum of the amount of every LedgerTransaction whose operation kind is TOKEN_ISSUANCE
+These two views must remain equal.
 
-The accounting invariant is:
+TRANSFER does not change total supply.
 
-issued(S) = supply(S)
+Whether an Account is considered circulating, reserved, locked, or otherwise excluded from an
+application or simulation metric is outside the primitive supply invariant.
 
-and:
+## Initial monetary state
 
-supply(S) belongs to TotalSupply.
+Before any ISSUE, total supply is zero and every existing Account balance is zero.
 
-The treasury balance is part of supply. Tokens held by the treasury are issued but not circulating
-among users.
-
-## Initial economic state
-
-The initial economic state contains the treasury with balance zero and no economic history.
-
-Creating a User creates one user wallet with balance zero. User creation does not create an
-EconomicOperation or LedgerTransaction and does not change supply.
+Creating a Principal or Account does not create monetary value and does not create a Transaction.

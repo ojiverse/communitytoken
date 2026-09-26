@@ -1,38 +1,54 @@
 # Requirements and Invariants
 
-Design should begin with the behavior or quality the system must preserve. Functional requirements
-describe what the system must do. Non-functional requirements describe qualities such as security,
-reliability, consistency, performance, and operability.
+Design begins with behavior or quality the system must preserve.
 
-Each requirement should be translated into one or more invariants: statements that must remain true
-across relevant states and transitions. An invariant is more durable than a particular file layout,
-tool, or implementation technique.
+Functional requirements describe what the system must do. Non-functional requirements describe
+qualities such as security, consistency, reliability, performance, and operability.
 
-## Design from the invariant
+Each requirement should be translated into explicit invariants before implementation details are
+chosen.
 
-Once an invariant is explicit, assign responsibility for preserving it. The design should make the
-valid path natural, constrain invalid states where practical, and provide an observable boundary
-when enforcement cannot be structural.
+## From requirement to invariant
 
-Keep these concerns distinct:
+A requirement is the outcome that matters.
 
-- **Requirement:** the behavior or quality that matters.
-- **Invariant:** the condition that must remain true to satisfy the requirement.
-- **Design:** the ownership and mechanisms that preserve the invariant.
-- **Evidence:** the observation that demonstrates the design is working.
+An invariant is the condition that must remain true for that outcome to hold.
 
-A test or checker is not the invariant itself. It is only one possible source of evidence. Adding a
-check without identifying the requirement and invariant often enforces incidental structure instead
-of the property the system needs.
+Design assigns ownership and mechanisms that preserve the invariant.
 
-## Questions to ask
+Evidence demonstrates that the mechanism works.
 
-- Which functional or non-functional requirement is being protected?
-- What must always remain true for that requirement to hold?
-- Which component or boundary owns preservation of that condition?
-- How does the design prevent, contain, or expose a violation?
-- What independent evidence shows that the invariant is preserved?
-- Could the implementation change while the invariant remains intact?
+Tests and checkers are evidence. They are not the invariant itself.
 
-This sequence keeps implementation choices traceable to requirements while allowing the design to
-evolve without weakening its guarantees.
+## Prefer the smallest invariant
+
+An invariant should be no broader than the requirement demands.
+
+CommunityToken needs to prevent negative balances and unintended supply changes. That requires
+precise ISSUE and TRANSFER rules; it does not require a primitive distinction between distribution,
+peer-to-peer payment, treasury payment, or reward.
+
+Overstating the invariant creates permanent vocabulary from temporary product policy.
+
+## Ownership
+
+For each invariant, identify the component with enough information and authority to preserve it.
+
+Monetary conservation belongs to the primitive ledger. External identity uniqueness belongs to the
+identity boundary. Product authorization belongs to the application. Feature eligibility belongs to
+the feature. Simulation behavior belongs to the scenario or policy layer.
+
+Moving a rule to a layer that lacks the required knowledge either weakens enforcement or forces
+unrelated concepts into that layer.
+
+## Evidence
+
+Choose evidence appropriate to the owner.
+
+Static types can rule out invalid representations. Unit tests can prove transition behavior.
+Persistence tests can prove atomicity and durability. Integration tests can prove boundary contracts.
+
+Do not create multiple independent implementations of the same rule merely to obtain more checks.
+
+The preferred assurance path is requirement, invariant, authoritative owner, owning mechanism, then
+observable evidence.

@@ -1,66 +1,112 @@
 # Community Token Platform for OJIverse
 
-A feature-agnostic, transfer-centric community economic substrate for OJIverse, implemented on
-Cloudflare Workers and Durable Objects.
+CommunityToken is a primitive integer-value ledger and a Discord-first product built on top of it.
 
-## Status
+The architecture is intentionally smaller than the product. The monetary core preserves only the
+facts required to validate and commit value movement, while product features and economic simulation
+own the reasons those movements occur.
 
-The legacy Supabase/Deno implementation has been removed from the tree; Git history preserves it.
+## Architecture
 
-The current architecture deliberately keeps feature policy outside CommunityToken core:
+Architecture authority is GitHub issue #17.
 
-- [Architecture #17](https://github.com/ojiverse/communitytoken/issues/17) — feature-agnostic core boundary
-- [Roadmap #18](https://github.com/ojiverse/communitytoken/issues/18) — current sequencing and gates
-- [Phase 2 #19](https://github.com/ojiverse/communitytoken/issues/19) — minimal core + supported Discord surface
-- [Phase 3 #5](https://github.com/ojiverse/communitytoken/issues/5) — monorepo, CI/CD, and operational stabilization
+The primitive model contains three concepts:
 
-The core economic operation set is intentionally small:
+- Principal: a stable internal owner of Accounts.
+- Account: a non-negative integer balance container.
+- Transaction: an immutable committed monetary fact.
 
-```text
-TOKEN_ISSUANCE
-DISTRIBUTION
-P2P_TRANSFER
-TREASURY_PAYMENT
-```
+There are exactly two monetary transaction kinds:
 
-Feature-specific eligibility, cadence, scheduling, campaign state, and business uniqueness are not
-core economic concepts merely because they may cause one of those movements.
+- ISSUE credits one Account and increases total supply by the same amount.
+- TRANSFER moves existing value between Accounts and leaves total supply unchanged.
 
-Production services may share one OJIverse Cloudflare account, but mutable resources and bindings are
-owned per service/plugin. Only CommunityToken core receives direct access to CommunityToken economic
-persistence; cross-service integration uses explicit application/protocol boundaries. See
-[ADR-0003](./docs/adr/0003-cloudflare-ingress-topology.md).
+The core does not classify Principals as human, bot, agent, service, organization, community, or
+system. It does not classify Accounts as user, treasury, reserve, escrow, or another institutional
+role.
 
-The repository currently contains the runtime-independent economic core, executable contract suite,
-application boundary, Cloudflare persistence implementation, trusted API boundary, and OIDC
-registration flow. Phase 2 cleanup #20 reconciles remaining source/schema comments and code with the
-feature-agnostic specification.
+Distribution, peer-to-peer payment, treasury payment, Daily Reward, campaign reward, compensation,
+and simulation events are higher-level meanings. When they move value, they ultimately request ISSUE
+or TRANSFER through an authorized application boundary.
+
+## Identity and current product
+
+The beta product is Discord-first, but the internal identity model is provider-independent.
+
+An ExternalIdentity is the exact issuer and subject pair. IdentityBinding associates that pair with a
+Principal. A first successful registration creates a Principal and a product-default Account.
+
+A Principal is not defined as a human. Future non-human or institutional subjects do not require a
+new ledger model.
+
+The current product also designates an ordinary community Principal and one ordinary Account owned by
+it as the community reserve. The reserve is an application role, not an Account kind.
+
+Initial supply is created explicitly with ISSUE to that reserve. Administrative distribution and
+user-facing transfer are product use cases that perform TRANSFER.
+
+## Simulation boundary
+
+Economic simulation is a first-class future consumer of the same primitive ledger.
+
+A simulation may define arbitrary Principals, Accounts, institutional roles, behavioral agents,
+policies, schedules, initial conditions, and scenario events. Those rules produce ISSUE and TRANSFER
+requests.
+
+Transaction history is sufficient to reconstruct monetary state. Behavioral and policy provenance
+belongs to the simulation layer and may reference Transaction identifiers.
+
+This permits treasury, reserve, central-bank, market-maker, escrow, or other institutional models to
+be introduced by scenarios without making them permanent ledger primitives.
+
+## Roadmap
+
+Current sequencing is:
+
+1. Issue #24 rewrites normative documentation around the primitive architecture.
+2. Issue #25 reconciles source, schema, application contracts, persistence, and tests.
+3. Issue #21 implements the Discord interaction adapter over the reconciled HTTP boundary.
+4. Issue #22 deploys and verifies the production stack.
+5. Issue #5 stabilizes package boundaries, CI/CD, migrations, observability, and operations.
+
+Issue #18 is the roadmap source of truth and issue #19 is the Phase 2 tracker.
+
+The documentation on main describes the architecture that implementation must converge to. Until
+issue #25 is merged, source and schema may still contain names from the superseded User, Wallet,
+Treasury, EconomicOperation, LedgerTransaction, and four-operation model. Those names are migration
+residue, not current design authority.
+
+## Runtime
+
+Production uses Cloudflare Workers and a singleton CommunityState Durable Object as the serialized
+persistence authority.
+
+Cloudflare is an implementation platform, not part of the primitive domain model.
+
+Services may share one OJIverse Cloudflare account, but mutable resources remain service-owned.
+Only CommunityToken receives direct access to CommunityToken persistence. Other services integrate
+through explicit application or protocol boundaries.
+
+See ADR-0003 for the Cloudflare topology rationale.
 
 ## Development
 
-Requires Node.js >= 22 and pnpm >= 10.
+Requires Node.js 22 or newer and pnpm 10 or newer.
 
-```bash
-pnpm install
-pnpm -r test
-pnpm -r check
-```
-
-Formatting and linting use Biome; secrets scanning uses secretlint.
+Install dependencies with pnpm install. Run repository tests with pnpm -r test and type checks with
+pnpm -r check. Formatting and linting use Biome. Secret scanning uses secretlint.
 
 ## Documentation
 
-- [Specifications](./docs/specification/README.md) — normative domain and technical invariants
-- [Economic Model](./docs/economic-model.md) — compatibility entry point into economic specifications
-- [Engineering Principles](./docs/engineering-principles/README.md)
-- [Design Policies](./docs/design-policy/README.md)
-- [Architecture Decision Records](./docs/adr/README.md)
+- docs/specification contains normative semantics and technical invariants.
+- docs/economic-model.md is the entry point into the primitive ledger model.
+- docs/adr contains durable architectural rationale.
+- docs/engineering-principles contains repository-wide reasoning rules.
+- docs/design-policy contains recurring design guidance.
 
-Normative semantics and invariants live in the specifications. ADRs preserve architectural rationale
-that should remain discoverable beyond a design thread. The current high-level responsibility
-boundary is #17. Implementation sequencing, concrete runtime choices, deployment facts, and feature
-delivery details live in the relevant GitHub issues.
+Normative specifications win over implementation issues for semantics and invariants. Implementation
+work must reconcile the code when it disagrees with the current specification.
 
 ## License
 
-MIT License, see [./LICENSE](./LICENSE).
+MIT License. See LICENSE.

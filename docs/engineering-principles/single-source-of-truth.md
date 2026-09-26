@@ -1,47 +1,43 @@
 # Single Source of Truth
 
-Every declarative fact should have one authoritative owner. Examples include schemas, dependency
-versions, infrastructure definitions, and deployment configuration.
+Every durable fact or semantic rule should have one authoritative owner.
 
-Copying those facts into a test or helper creates a second authority. The copy can drift, and every
-change then requires synchronized edits. A check intended to prevent mistakes becomes another
-place where mistakes can occur.
+Copies create competing authorities. They can drift while continuing to look plausible.
 
-## Design rule
+## Facts and interpretation
 
-Choose the source of truth before choosing its validation. Other components should consume that
-source or observe its effects. They should not restate it as a parallel list of expected values.
+Single ownership applies both to stored values and to their meaning.
 
-A derived artifact is safe when it is generated mechanically and can be discarded and recreated.
-A hand-maintained copy is not derived; it is a competing authority.
+A schema definition, dependency version, identity binding, transaction history, or deployment
+configuration should have one place that determines truth.
 
-## Ownership includes interpretation
+Consumers should use that source or observe its effects rather than maintaining parallel handwritten
+lists.
 
-Single ownership applies to semantics as well as stored values. The subsystem that defines a format
-usually has the best knowledge of its syntax, meaning, and lifecycle. Its native execution and
-validation mechanisms should interpret the authoritative source.
+## Semantics
 
-Reimplementing those rules in a repository script creates a second semantic authority even when it
-reads the original source. The custom interpreter must track specification changes, edge cases, and
-environment differences, and it may diverge while continuing to appear authoritative.
+Normative specifications own CommunityToken domain semantics.
 
-Native mechanisms therefore follow directly from the Single Source of Truth principle. When
-validating a concern, prefer:
+The primitive ledger owns committed monetary facts.
 
-1. The owning subsystem's normal execution path.
-2. Its native validation or planning command.
-3. A behavior test at the boundary consumed by the application.
-4. A custom checker only when it adds project-specific knowledge the earlier layers cannot express.
+Application roles such as community reserve are owned by application state or configuration rather
+than inferred from Account structure.
 
-This order keeps both the facts and their interpretation with the subsystem that owns them.
+Feature and simulation provenance are owned by those higher-level layers and may reference a
+Transaction identifier instead of being copied into primitive Transaction semantics.
 
-## Questions to ask
+## Native enforcement
 
-- Which file or subsystem owns this fact?
-- Would a future change require editing the same fact in two places?
-- Can the consumer read or apply the authoritative definition directly?
-- Is the owning subsystem interpreting and enforcing its own definition?
-- Is a generated artifact being mistaken for repository source?
+Prefer the owning subsystem's normal execution path and native validation before writing a custom
+interpreter.
 
-Clear ownership reduces both drift and debate. When something is wrong, maintainers know where it
-must be corrected.
+A generated artifact is safe when it can be recreated from its authoritative source. A
+hand-maintained duplicate is another source of truth.
+
+## Decision test
+
+Ask which component owns the fact, whether a future change would require editing the same meaning in
+multiple places, whether consumers can observe the authoritative source directly, and whether a
+custom validation path is duplicating interpretation.
+
+Clear ownership shortens diagnosis: when a fact is wrong, maintainers know where to correct it.

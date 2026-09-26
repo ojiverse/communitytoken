@@ -1,45 +1,46 @@
 # Immutability by Default
 
-Values should be immutable by default. A state change should produce a new value rather than alter
-an existing value that other code may still observe.
+Values are immutable by default.
 
-Mutation introduces time into the meaning of data. The same reference can represent different
-values at different moments, so correctness begins to depend on operation order, hidden aliases,
-and knowledge of who may write next. This creates temporal coupling and makes local reasoning less
-reliable.
+A state change should be expressed as an explicit transition rather than as uncontrolled mutation of
+an object that other code may still observe.
 
-Immutability keeps a value stable after construction. Callers can share it without coordinating
-writes, functions can reason from their inputs, and state transitions remain explicit in the code.
-It also gives the type system a stronger model because a validated value cannot silently change
-behind a trusted reference.
+## Why immutability is the default
 
-## Design rule
+Mutation makes the meaning of a reference depend on time, operation order, hidden aliases, and future
+writers.
 
-Begin with immutable domain values, inputs, outputs, collections, and configuration. Model a change
-as a transformation from the current value to the next value. Make that transition visible at the
-boundary responsible for it.
+Immutable values remain stable after construction, can be shared without coordinating writes, and
+allow local reasoning from inputs to outputs.
 
-In TypeScript, use readonly types and APIs to express this intent statically. `const` protects only
-the binding, not the object it references, so the type model must also prevent writes to properties
-and collections where immutability is required.
+They also make type-level guarantees stronger because a validated value cannot silently change behind
+a trusted reference.
 
-## Mutation as an explicit exception
+## State transitions
 
-Some requirements may justify mutation, such as integration with a stateful platform primitive or
-a measured performance constraint. Convenience alone is not sufficient.
+When state must change, the owning boundary defines the transition and the invariants it preserves.
 
-When mutation is unavoidable:
+For CommunityToken, committed Transaction history is immutable even though Account balances change
+through accepted ISSUE and TRANSFER transitions.
 
-- identify the requirement that makes it necessary;
-- confine it to the smallest possible owner and lifetime;
-- do not expose mutable references across that boundary;
-- make permitted transitions and preserved invariants explicit;
-- provide evidence for the behavior that static types cannot prove;
-- explain [why mutation is necessary](./comments-explain-why.md) when the reason is not recoverable
-  from the design.
+A correction is another valid Transaction, not a rewrite of the historical fact.
 
-Encapsulated mutation can be an implementation detail behind an immutable interface, but it still
-carries risk and must not leak into the surrounding model.
+## Mutation as an exception
 
-Mutability is the last representation to choose. The burden of justification belongs to the code
-that introduces it; immutability requires no special exception.
+Platform integration or a demonstrated performance constraint may require mutation.
+
+When mutation is necessary, confine it to the smallest owner and lifetime, do not leak mutable
+references, make permitted transitions explicit, and provide runtime evidence for properties the type
+system cannot prove.
+
+Convenience alone is not sufficient reason to expand the mutable surface.
+
+## Type expression
+
+Use readonly or equivalent type constructs where they strengthen the design.
+
+A constant binding alone does not make the referenced value immutable, so the type model and exposed
+API must preserve the intended boundary.
+
+Immutability is the default assumption. Code that introduces wider mutation carries the burden of
+justification.

@@ -1,172 +1,84 @@
 # ADR-0002: Namespace the application API under /api/v1
 
-- Status: Accepted
-- Date: 2026-09-21
-- Scope: CommunityToken HTTP surface
+Status: Accepted
+
+Date: 2026-09-21
+
+Last aligned with architecture: 2026-09-26
+
+Scope: CommunityToken HTTP surface
 
 ## Context
 
-ADR-0001 defines the trusted core as a command/query-oriented application API rather than a generic
-resource-oriented CRUD API.
+ADR-0001 defines a command/query-oriented application boundary.
 
-The initial Phase 2 implementation grouped delegated operations under `/internal/*` and
-administrative operations under `/admin/*`. That layout correctly separated authorization groups,
-but `internal` is misleading: these endpoints are not defined by private-network reachability, and
-the path itself is not a security boundary.
+Earlier Phase 2 work used internal and admin path prefixes. The internal label was misleading because
+trust comes from authentication and authorization, not network placement or pathname.
 
-The namespace should communicate what kind of HTTP surface a caller is using without encoding the
-current adapter implementation or pretending that URL hierarchy is the authority model.
-
-CommunityToken also has protocol-specific public ingress that is not part of the application API:
-the OIDC callback. Discord interactions are a separate external-protocol surface owned by the Discord
-adapter rather than by the core application API.
+CommunityToken also exposes protocol-specific ingress that is not part of the application API, such
+as the OIDC callback. Discord interactions are owned by a separate adapter.
 
 ## Decision
 
-The CommunityToken HTTP surface is partitioned as follows:
+The versioned application API lives under /api/v1.
 
-```text
-/api/v1/*
-    versioned command/query application API
+Administrative-capability operations live under /api/v1/admin.
 
-/api/v1/admin/*
-    administrative-capability subset of the application API
+Authentication-protocol ingress lives under /auth.
 
-/auth/*
-    authentication-protocol endpoints
+Discord interaction ingress lives at /interactions on the separate Discord adapter.
 
-/interactions
-    Discord interactions protocol ingress when the Discord adapter is deployed
-```
+The namespace communicates surface ownership but is not itself an authorization mechanism.
 
-The current core application routes are:
+## Current product routes
 
-```text
-POST /api/v1/registration-intents
-POST /api/v1/balance
-POST /api/v1/history
-POST /api/v1/transfers
+The current Phase 2 product includes routes for registration intents, balance, history, transfers,
+administrative issuance, administrative distribution, and administrative reserve inspection.
 
-POST /api/v1/admin/issuances
-POST /api/v1/admin/distributions
-GET  /api/v1/admin/treasury/balance
-GET  /api/v1/admin/treasury/history
+The existing treasury spelling in administrative reserve-inspection routes may remain for Phase 2
+compatibility. It is application vocabulary and must not be interpreted as a primitive Account kind.
 
-GET  /auth/oidc/callback
-```
+## Versioning
 
-The non-admin `/api/v1/*` operations are currently authorized for the `discord-adapter` service
-principal. Administrative operations under `/api/v1/admin/*` require the `admin-api` principal.
+The CommunityToken Worker and its callers are independently deployed.
 
-Authorization is route metadata and application policy, not a raw string-prefix security check.
-Because `/api/v1/admin/*` is lexically below `/api/v1/*`, implementations must not authorize the
-non-admin principal merely by matching the broader prefix.
+The v1 namespace makes a breaking application contract change explicit. It does not require multiple
+versions to operate indefinitely.
 
-## Rationale
+## Administrative visibility
 
-### Remove the false meaning of internal
+Administrative issuance, distribution, and reserve inspection are capabilities distinct from
+delegated user actions.
 
-`internal` commonly implies private-network reachability, deployment locality, or an interface that
-is inaccessible outside a trusted network. None of those properties defines the CommunityToken
-boundary.
+Keeping them under the admin namespace makes that operational distinction visible while leaving
+authorization enforcement to the application.
 
-The API is protected by authenticated service principals and authorization. A route does not become
-trusted because its pathname contains `internal`.
+## Protocol ingress
 
-### Use API to identify the application protocol surface
+The OIDC callback participates in an authentication protocol rather than the command/query API.
 
-`/api` communicates that the route belongs to CommunityToken's machine-facing application
-contract without claiming REST resource semantics.
+The Discord interaction endpoint participates in the Discord protocol and belongs to the adapter,
+which translates verified interactions into supported CommunityToken application requests.
 
-ADR-0001 remains authoritative for the interaction model: the API carries commands and queries whose
-meaning is defined by application operations and domain transitions.
-
-### Version the independently deployed HTTP contract
-
-The core Worker and its callers are independently deployed. `/v1` provides an explicit boundary for
-future breaking HTTP-contract changes.
-
-Versioning the path does not require parallel long-term operation of multiple versions. A later
-version may replace v1 operationally while still making the breaking contract change explicit.
-
-### Keep administrative authority visible
-
-Administrative issuance, distribution, and treasury inspection are qualitatively different
-capabilities from delegated User operations. Keeping them under `/api/v1/admin/*` makes that
-difference visible to operators and reviewers.
-
-The namespace is descriptive, not authoritative. Application-level authorization remains required.
-
-### Keep external protocols outside the application API namespace
-
-`/auth/oidc/callback` participates in the OIDC protocol rather than the command/query API.
-
-`/interactions` participates in the Discord interactions protocol. The Discord adapter verifies and
-translates that external protocol before invoking CommunityToken application operations over their
-supported boundary.
-
-These endpoints therefore remain outside `/api/v1`.
+These protocol endpoints therefore remain outside /api/v1.
 
 ## Rejected alternatives
 
-### /internal/*
+An internal namespace was rejected because it implies a network trust property that does not exist.
 
-Rejected because it implies a network or deployment trust property that does not exist. It also makes
-the actual authentication and authorization boundary less obvious.
+An rpc namespace was rejected because the architectural decision is about application semantics, not
+branding the transport as RPC.
 
-### /rpc/*
-
-Rejected because ADR-0001 is about state-transition-oriented application semantics, not commitment to
-an RPC-branded transport style. The URL should not encode more implementation style than necessary.
-
-### /adapter/*
-
-Rejected because it couples the core contract to the current caller role. Future trusted callers may
-use the same application operations without being Discord adapters.
-
-### /service/*
-
-Rejected because it is too broad to explain the contract and does not distinguish the application API
-from other service-facing protocol endpoints.
-
-### /delegated/*
-
-Rejected because delegation is an authorization relationship, not the complete meaning of every
-query and command exposed by the application API.
-
-## Migration
-
-PR-3 shipped the first trusted API implementation using `/internal/*` and `/admin/*`.
-
-Before PR-4 added new routes, the existing implementation was renamed to the accepted namespace. The
-service had not reached production rollout, so no compatibility aliases or redirect routes were
-introduced.
-
-The mapping was:
-
-```text
-/internal/balance                -> /api/v1/balance
-/internal/history                -> /api/v1/history
-/internal/transfers              -> /api/v1/transfers
-
-/admin/issuances                 -> /api/v1/admin/issuances
-/admin/distributions             -> /api/v1/admin/distributions
-/admin/treasury/balance          -> /api/v1/admin/treasury/balance
-/admin/treasury/history          -> /api/v1/admin/treasury/history
-```
-
-The old paths became `404 not_found`.
-
-Because the idempotency fingerprint includes the request path, the rename changed transfer
-fingerprints. No compatibility or record migration was required before production rollout; tests and
-fixtures use the new path consistently.
+Adapter- or service-named namespaces were rejected because they couple the core contract to current
+callers.
 
 ## Consequences
 
-- Future application commands and queries live under `/api/v1`.
-- Administrative application operations live under `/api/v1/admin`.
-- Protocol ingress remains outside the application API namespace.
-- Route authorization must be explicit and must not rely solely on pathname hierarchy.
-- Adding a new caller does not require adding a caller-named namespace.
-- A future breaking application HTTP contract uses a new API version rather than silently changing
-  v1 semantics.
+Future application commands and queries live under a versioned API namespace.
+
+Protocol ingress remains separate.
+
+Route authorization must be explicit and cannot rely on path hierarchy alone.
+
+A future breaking HTTP contract uses a new API version or another explicit migration rather than
+silently changing v1 semantics.

@@ -1,109 +1,76 @@
 # Economic Transitions
 
-Economic state changes only through accepted economic operations.
+Monetary state changes only through accepted ISSUE or TRANSFER Transactions.
 
-## Operation kinds
+## ISSUE
 
-The economic model defines exactly these semantic kinds:
+ISSUE credits a positive integer amount to one existing destination Account.
 
-| Kind | Source | Destination | Supply effect |
-| --- | --- | --- | --- |
-| TOKEN_ISSUANCE | treasury | treasury | increases by amount |
-| DISTRIBUTION | treasury | user | unchanged |
-| P2P_TRANSFER | user | user | unchanged |
-| TREASURY_PAYMENT | user | treasury | unchanged |
+An accepted ISSUE increases the destination balance and total supply by exactly the same amount.
 
-DISTRIBUTION is the generic treasury-to-User movement primitive. The core does not refine it into
-feature-specific kinds based only on why an external feature requested the movement.
+ISSUE is the only primitive that may increase total supply.
 
-## Transition relation
+The destination Account has no required institutional role. The ledger does not require it to be a
+treasury, reserve, community, system, or user Account.
 
-Let a command be:
+Authorization to request ISSUE is determined outside primitive monetary validity.
 
-C = (kind, from, to, amount, metadata)
+## TRANSFER
 
-Evaluation defines a partial transition:
+TRANSFER moves a positive integer amount from one existing source Account to one existing destination
+Account.
 
-S --C--> S'
+An accepted TRANSFER decreases the source balance and increases the destination balance by the same
+amount.
 
-An accepted command produces S'. A rejected command produces no committed transition.
+TRANSFER does not change total supply.
 
-Common acceptance conditions are:
+The source must hold at least the requested amount before the transition.
 
-1. amount belongs to TokenAmount;
-2. from and to designate existing wallets;
-3. the wallet kinds match the direction admitted by C.kind;
-4. every resulting wallet balance belongs to WalletBalance;
-5. the resulting total supply belongs to TotalSupply;
-6. for every non-issuance operation, the source has at least amount before the transition.
+The ledger does not distinguish distribution, peer-to-peer payment, treasury payment, reward,
+compensation, escrow movement, or another higher-level reason. Those meanings belong to the
+application, feature, or simulation that requested the TRANSFER.
 
-## Balance deltas
+## Acceptance
 
-Let Delta_C(w) be the balance delta for wallet w.
+An ISSUE is accepted only when the amount is inside the monetary domain, the destination Account
+exists, the resulting destination balance is valid, and the resulting total supply is valid.
 
-For TOKEN_ISSUANCE:
+A TRANSFER is accepted only when the amount is inside the monetary domain, both Accounts exist, the
+source has sufficient balance, and every resulting balance remains valid.
 
-Delta_C(T) = +amount
+Account ownership role and Principal classification are not acceptance conditions.
 
-and Delta_C(w) = 0 for every w != T.
-
-For every non-issuance operation:
-
-Delta_C(w) =
-  -amount * [w = from]
-  +amount * [w = to]
-
-where [P] is 1 when P is true and 0 otherwise.
-
-The resulting balance is:
-
-balance'(w) = balance(w) + Delta_C(w)
+Authorization is not inferred from monetary validity.
 
 ## Self-transfer
 
-A P2P transfer may have from = to.
+A TRANSFER may use the same Account as both source and destination.
 
-Its balance delta is:
+The source must still hold at least the requested amount before the transition.
 
--amount + amount = 0
+The net balance change is zero, total supply is unchanged, and one immutable Transaction is still
+recorded.
 
-It is therefore valid when all other preconditions hold, changes no balance, and still records one
-EconomicOperation and one LedgerTransaction.
+Self-transfer is therefore a monetary event with no net balance effect, not a rejected no-op.
 
-## Issuance
+## Atomic result
 
-TOKEN_ISSUANCE is the only transition that may increase supply.
+An accepted primitive transition commits the Transaction and every required balance change as one
+indivisible result.
 
-It credits the treasury without a corresponding debit. The treasury-to-treasury ledger relation
-records the movement identity; the operation kind gives it credit-only semantics.
+There is no valid observable state where the Transaction exists without its required balance effect,
+or where the balance effect exists without the Transaction.
 
-## Distribution
-
-DISTRIBUTION moves existing treasury value to a User and never creates supply.
-
-Eligibility, cadence, scheduling, campaign rules, or business-specific uniqueness that caused a
-caller to request a distribution are outside this economic transition. They must not be inferred from
-metadata or encoded as additional core validity rules without a new core economic requirement.
-
-## Atomic semantic result
-
-For an accepted command, the following form one economic transition:
-
-- all required balance changes;
-- one EconomicOperation;
-- one LedgerTransaction.
-
-There is no valid observable state in which only a proper subset of those effects exists.
+Application state such as idempotency or feature-owned records may be composed in the same outer
+atomic section when its correctness depends on that primitive transition.
 
 ## Rejection
 
-Rejection leaves no trace.
+A rejected ISSUE or TRANSFER creates no Transaction and changes no balance.
 
-If any precondition fails:
+Insufficient funds, missing Accounts, invalid amount, or overflow are rejections rather than partial
+success.
 
-S' = S
-
-No balance changes, EconomicOperation, or LedgerTransaction are created.
-
-This applies equally to invalid amount, missing wallet, invalid direction, insufficient source
-balance, and overflow.
+Higher-level application rejection may occur before the primitive transition is evaluated. Such
+authorization or policy rejection is outside the monetary transition itself.

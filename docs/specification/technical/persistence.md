@@ -1,60 +1,73 @@
 # Persistence
 
-Persistence must preserve domain structure independently of application correctness.
+Persistence preserves primitive monetary and identity invariants independently of application
+correctness.
 
-This specification defines durable guarantees, not a storage schema.
+This specification defines durable guarantees, not database DDL.
 
 ## Durability
 
 Committed state survives process, instance, or runtime restart.
 
-Ephemeral memory is never the sole authority for balances, identity bindings, replay state, or
-economic history.
+Ephemeral memory is never the sole authority for Account balances, Principal identity bindings,
+idempotency state, registration state, or Transaction history.
 
-## Structural constraints
+## Structural guarantees
 
-The persistence boundary must make the following invalid states impossible or reject them:
+Every Account persistently references exactly one existing Principal.
 
-1. more than one wallet owned by the same User;
-2. a system wallet with a User owner;
-3. a user wallet without a User owner;
-4. more than one User bound to the same ExternalIdentity;
-5. an economic actor whose kind and identifier presence disagree;
-6. a ledger movement referring to nonexistent required economic state;
-7. a balance outside the WalletBalance domain.
+No primitive Account kind is required or permitted as the authority for user, treasury, reserve,
+system, or other institutional roles.
 
-The unique treasury invariant must hold for each deployment.
+Every ExternalIdentity may bind to at most one Principal.
 
-## Economic history
+A persisted ISSUE identifies an existing destination Account and no source Account.
 
-EconomicOperation and LedgerTransaction history is append-only.
+A persisted TRANSFER identifies existing source and destination Accounts.
 
-Existing economic history is not updated or deleted to express correction.
+A persisted balance must remain inside the Account-balance monetary domain.
 
-Persistence must enforce history immutability as a hard structural floor rather than relying only on
+Persistence must not require a separate EconomicOperation record paired with each Transaction.
+
+## Transaction history
+
+Committed Transaction history is append-only.
+
+An existing Transaction is not updated or deleted to express a correction.
+
+Persistence must enforce historical immutability as a structural floor rather than relying only on
 application convention.
+
+Higher-level application, feature, or simulation records may reference a Transaction identifier but
+do not redefine the monetary fact stored by that Transaction.
 
 ## Identifier integrity
 
 Internal identifiers are opaque and type-distinct at provider-independent boundaries.
 
-An internally generated identifier must be unique in its entity namespace and must not be derived
-from mutable or provider-specific identity data.
+An internal identifier must be unique within its entity namespace and must not be derived from mutable
+or provider-specific profile data.
 
-Rehydrating a persisted identifier restores its internal type; it does not reinterpret an external
-identifier as an internal one.
+Rehydrating a persisted identifier restores its internal identity; it does not reinterpret an
+external identifier as an internal one.
 
 ## Numeric integrity
 
-Every persisted monetary value must round-trip exactly within the monetary domains defined by the
-economic specification.
+Every persisted monetary amount and balance must round-trip exactly within the monetary domain.
 
-A persistence representation that can silently lose integer precision is non-conforming.
+A persistence representation that may silently lose integer precision is non-conforming.
 
-## Authority
+## Derived data
 
-Derived indexes, caches, or summaries may exist, but they are not independent authorities for the
-underlying domain facts.
+Indexes, caches, summaries, and projections may exist, but they are not independent authorities for
+underlying Principal, Account, IdentityBinding, or Transaction facts.
 
 If a derived representation disagrees with authoritative persisted state, the authoritative state
 wins.
+
+## Application-designated roles
+
+Persistence may store application state that identifies an ordinary Principal or Account for a
+specific product role, such as the current community reserve.
+
+That designation must not alter primitive Account structure or ISSUE and TRANSFER validity.

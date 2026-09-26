@@ -1,16 +1,18 @@
 # Technical Specifications
 
 Technical specifications define guarantees at system and trust boundaries without fixing a
-particular implementation mechanism.
+particular runtime or storage product.
 
-Read the domain specifications first when the behavior has product meaning.
+Read the domain specifications first when a change affects monetary or identity meaning.
 
-- [Transaction Consistency](./transaction-consistency.md) — serialization, atomicity, and scoped transaction capability.
-- [Persistence](./persistence.md) — durable structural guarantees and history immutability.
-- [Temporal Authority](./temporal-authority.md) — authoritative transaction time.
-- [Authentication and Delegation](./authentication-and-delegation.md) — authenticated identities and principal boundaries.
-- [Registration](./registration.md) — one-shot external-identity proof and binding creation.
-- [Idempotency](./idempotency.md) — retry equivalence and atomic replay protection.
+- Transaction Consistency defines serialization, atomicity, and transaction-scoped capabilities.
+- Persistence defines durable structural guarantees and Transaction immutability.
+- Temporal Authority defines authoritative mutation time.
+- Authentication and Delegation defines identity proof and technical caller boundaries.
+- Registration defines one-shot external-identity proof and Principal binding creation.
+- Idempotency defines retry equivalence and atomic replay protection.
 
-These documents intentionally do not name runtime products, database engines, source-code modules,
-routes, environment variables, or deployment procedures.
+These documents do not define Cloudflare Worker names, database DDL, source modules, environment
+variables, or deployment commands.
+
+The primitive monetary vocabulary used here is Principal, Account, Transaction, ISSUE, and TRANSFER.

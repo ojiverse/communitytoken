@@ -1,37 +1,46 @@
 # Temporal Authority
 
-Time used for a mutation is part of the transaction boundary.
+Time used by a durable mutation is part of the transaction boundary.
 
 ## One authoritative instant
 
-Every serialized mutation has exactly one authoritative timestamp, now_ms.
+Every serialized mutation has exactly one authoritative timestamp.
 
-That timestamp is sampled after the serialized transaction begins and before application logic
-inside the transaction makes time-dependent decisions.
+That instant is sampled after the serialized section begins and before mutation logic makes
+time-dependent decisions.
 
-The value is immutable for the lifetime of the transaction.
+The value remains fixed for the lifetime of that section.
 
 ## Consistency
 
-Every timestamp created by the same transaction uses the same now_ms when those timestamps describe
-that transaction's state change.
+Every durable timestamp describing effects of the same atomic application mutation uses the same
+authoritative instant when those effects are intended to represent one committed state change.
 
-A single transaction therefore cannot observe multiple authoritative instants merely because
-wall-clock time advanced during execution.
+This applies to Transaction commit time, registration state, identity lifecycle changes, idempotency
+records, and other application state composed in the same mutation.
 
-This applies to economic history, identity lifecycle changes, registration state, and replay state
-whenever they are created or consumed by the same mutation.
+A single mutation must not observe several authoritative instants merely because wall-clock time
+advances while code executes.
+
+## Primitive ledger boundary
+
+ISSUE and TRANSFER validity does not depend on wall-clock policy.
+
+Time is recorded for durable ordering and application consistency, but the primitive ledger does not
+use time to infer eligibility, cadence, reward windows, campaign state, or other policy.
+
+Those decisions belong to the higher-level owner that requests the primitive transition.
 
 ## Caller isolation
 
-An external caller cannot supply the authoritative transaction time.
+An external caller cannot supply authoritative mutation time.
 
-Transport fields, request timestamps, client clocks, and provider timestamps may be evidence or
-input data, but they cannot replace now_ms for mutation authority.
+Transport timestamps, provider timestamps, client clocks, and simulation-event timestamps may be
+input or provenance, but they do not replace the authoritative commit instant for durable state.
 
 ## Testability
 
-A conforming system may substitute a controlled time source for tests.
+A conforming implementation may substitute a controlled time source in tests.
 
-The substitution must occur at the time-authority boundary, not by adding caller-controlled time to
-the product interface.
+The substitution occurs at the time-authority boundary rather than by exposing caller-controlled
+commit time through the product interface.

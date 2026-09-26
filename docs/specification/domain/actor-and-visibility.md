@@ -1,70 +1,76 @@
-# Actor and Visibility
+# Application Authority and Visibility
 
-The actor of an operation answers who caused the operation. It is independent of which wallet funds
-the movement.
+Primitive monetary validity does not encode actor, product reason, or visibility policy.
 
-## Actor
+Those concerns belong to the application or higher-level consumer around the ledger.
 
-An actor is exactly one of:
+## Authority is outside the Transaction
 
-- a User;
-- a service principal;
-- the system.
+An Account owner is not necessarily the authority that caused a monetary transition.
 
-A User actor carries a User identifier.
+Administrative ISSUE may be authorized by an administrative service while crediting a community
+reserve Account.
 
-A service actor carries a service-principal identifier.
+A feature service may be authorized to request a TRANSFER from a reserve Account to a recipient
+without becoming the owner of either Account.
 
-A system actor carries no identifier.
+A user-facing transfer may be authorized after resolving the invoking ExternalIdentity to a
+Principal and selecting that Principal's product-default Account.
 
-The actor is audit and application context. It is not an input to economic validity and must not be
-derived from the source wallet.
+The primitive Transaction therefore does not carry an actor type merely to express application
+authority.
 
-Examples of the distinction:
+Higher-level application, feature, or simulation records may retain provenance and reference the
+resulting Transaction identifier.
 
-- a User-to-User transfer has the sending User as actor;
-- an administrative distribution has an administrative service as actor while the treasury is the source.
+## Technical caller and domain Principal
 
-For a user-initiated action received through an adapter, the adapter itself is not the actor. The
-resolved User is.
+An authenticated technical caller and a domain Principal are distinct concepts.
 
-This rule does not grant a User authority over the treasury. When an authorized service requests a
-treasury distribution, that service is the actor even if a feature outside the core initiated the
-request in response to a User action.
+An adapter credential proves which service is making a trusted request. An ExternalIdentity supplied
+through that trusted boundary identifies the subject of a user-facing product action.
 
-## Visibility
+The application resolves that ExternalIdentity to a Principal and authorizes the requested use case.
 
-Normal User visibility is self-only.
+Possession of a technical credential does not make that service the owner of a Principal's Account,
+and knowledge of a Principal identifier is not an impersonation credential.
 
-A User may observe:
+## Product visibility
 
-- the balance of the User's own wallet;
-- economic history whose ledger movement involves the User's own wallet.
+The current user-facing product exposes self-only balance and history.
 
-A normal User may not observe another User's balance or history merely by knowing an identifier.
+A caller acting for one registered external identity may observe the balance of that Principal's
+product-default Account and Transaction history involving that Account.
 
-Treasury inspection is an administrative capability, separate from normal User visibility.
+The normal product surface does not permit selecting another Principal or Account merely by knowing
+an internal identifier.
+
+Inspection of the application-designated community reserve is an administrative capability.
+
+These are application visibility rules, not primitive ledger invariants.
 
 ## History direction
 
-History direction is relative to the wallet being viewed.
+History direction is a projection relative to the Account being viewed.
 
-For a movement touching that wallet:
+An ISSUE into the viewed Account is incoming.
 
-- in means value arrives at the wallet;
-- out means value leaves the wallet;
-- self means a P2P movement has the same wallet as source and destination.
+A TRANSFER is incoming when value arrives, outgoing when value leaves, and self when source and
+destination are the viewed Account.
 
-A self-transfer appears once in that wallet's history.
+A self-transfer appears once.
 
-TOKEN_ISSUANCE is incoming in treasury history even though its source and destination both name the
-treasury, because its semantic effect is a credit.
+Direction is a projection over primitive facts. It must not be used to reconstruct semantic
+Transaction kinds such as distribution, peer-to-peer payment, or treasury payment.
 
 ## Counterparty
 
-For a User history entry, the counterparty is the User owning the other user wallet or the treasury.
+For a TRANSFER involving the viewed Account, an application projection may expose the Principal that
+owns the other Account when visibility policy allows it.
 
-For a P2P self-transfer, the counterparty is the same User.
+For self-transfer, the counterparty is the same Principal.
 
-History interpretation must be derived from the operation and ledger relation; it must not invent a
-second economic meaning.
+An ISSUE has no source counterparty.
+
+The application may label a designated Account as a community reserve for presentation, but that
+label is not stored as a primitive Account kind.

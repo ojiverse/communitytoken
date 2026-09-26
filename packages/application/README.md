@@ -1,120 +1,120 @@
 # @communitytoken/application
 
-The runtime-independent application layer of the CommunityToken core
-(see `docs/specification/README.md`). It owns use-case orchestration, actor context, authorization,
-and visibility policy. It owns **no** storage, no platform/runtime types, and no economic rules — the
-economic decision boundary remains `@communitytoken/economic-kernel`.
+This package is the runtime-independent application orchestration layer.
 
-Trusted surfaces (`/api/v1/*` and `/api/v1/admin/*` in the authentication/delegation
-specification) resolve an `Actor` and invoke `CommunityTokenApplication` methods or the exported
-composable operations. Bearer-credential verification stays at the Worker boundary;
-external-identity resolution and idempotency are composable application ports
-(`IdentityBindingRepository`, `IdempotencyRepository`, `executeIdempotent`) that run inside the
-caller's serialized section.
+It translates authenticated product actions into identity resolution, authorization, primitive
+ledger commands, projections, and application-level consistency work. It owns no Cloudflare runtime
+types and no primitive monetary rules.
 
-## Boundary invariant
+Architecture authority is GitHub issue #17.
 
-Every method runs inside `UnitOfWork.transact`, the single atomic commit section:
+## Migration status
 
-```text
-Atomic mutation sections contain no await / external I/O.
-Repository operations used inside that boundary are synchronous.
-Async network work must complete before entering the serialized commit section.
-```
+The package is being reconciled to the Principal, Account, and Transaction model in issue #25.
 
-The invariant is enforced twice: `Synchronous<R>` rejects promise-returning work at compile time,
-and conforming `UnitOfWork` implementations throw at runtime when `work` returns a `PromiseLike`.
-The production adapter maps `transact` onto the CommunityState Durable Object's synchronous storage
-transaction; this package depends on no Cloudflare types.
+Until that work merges, source files may still expose superseded User, Wallet, actor, treasury, or
+four-operation types. This README describes the target boundary and should be used when deciding
+whether existing code is migration residue.
 
-Every facade method opens its own section. The use-case operations are also exported directly and take
-an already-open `TransactionContext`, so outer orchestration can extend the same atomic unit with
-cross-cutting state such as an idempotency record. Sections do not nest: composed operations share
-one open context, and opening `transact` inside an open section is a contract violation.
+## Responsibility boundary
 
-`executeIdempotent(ctx, keyInfo, execute)` is the composable idempotency choreography for a protected
-mutation. Inside the caller's open section it looks up the record under
-`(servicePrincipal, idempotencyKey)`, replays the stored result verbatim when
-`fingerprintVersion` and `requestFingerprint` match, reports a conflict when they differ, and
-otherwise runs `execute()`. A recordable outcome (`record: true`) inserts the serialized result
-before returning; an expected non-mutating failure (`record: false`) leaves the key unconsumed and
-retryable. A throw — from `execute` or the record insert — propagates and rolls the whole section
-back, so the record and mutation it guards commit atomically.
+The application layer owns external-identity resolution, selection of application-designated
+Accounts, caller authorization, product use-case mapping, visibility, registration orchestration,
+idempotency composition, and transaction-scoped coordination with persistence.
 
-## Ports
+The primitive economic layer owns only monetary validity and the effects of ISSUE and TRANSFER.
 
-- `Clock` — epoch-millisecond time authority consumed by the `UnitOfWork` implementation, which
-  samples it exactly once per serialized transaction at entry and freezes the value on the
-  `TransactionContext` (the temporal-authority specification). Tests inject fixed/stepping clocks.
-- `UnitOfWork` — the atomic boundary described above.
-- `TransactionScope` — the repositories valid inside a section:
-  - `WalletRepository` — wallet lookup and absolute balance writes driven by kernel
-    `EconomicEffect` deltas.
-  - `OperationRepository` — `EconomicOperation` append plus the operation+ledger history join
-    (newest-first, opaque cursor).
-  - `LedgerRepository` — append-only `LedgerTransaction` writes.
-  - `IdentityBindingRepository` — exact `(issuer, subject)` → `UserId` lookup plus `insert` for
-    the registration-owned binding row. The port exposes no unlink or reassignment path.
-  - `IdempotencyRepository` — `find`/`insert` of `IdempotencyRecord` rows keyed by
-    `(servicePrincipal, idempotencyKey)`. Records are append-only; a duplicate insert throws so a
-    second commit can never overwrite the first replay record.
-  - `UserRepository` — `insert` of the stable internal `User` record. Registration allocates the
-    User id inside the persistence boundary; the port exposes no lookup or mutation path.
-  - `RegistrationIntentRepository` — the single-use registration proof rows:
-    `findByState`, `supersedeActive`, `insert`, and `markConsumed`.
-- `TransactionContext` — a `TransactionScope` plus `nowMs`, the section's single frozen
-  `now_ms` sampled once at entry before `work` runs. Context and repository handles are revoked
-  permanently when their owning section closes: a captured handle cannot read or write after
-  `transact` returns, and it never revives while a later section is open. Repository values are
-  storage-owned immutable records — mutation only happens through repository mutation methods.
+The application layer must not recreate ledger arithmetic, supply rules, or balance invariants.
 
-Record ids are allocated inside repository implementations — identifier allocation is a
-persistence-boundary concern, so no `IdGenerator`/`RandomSource` port exists. Registration proof
-secrets are generated at the Worker/OIDC boundary rather than by the runtime-independent application
-layer. For the same reason the only raw-string-to-brand coercion is the explicitly named
-`rehydrate` namespace: the visible unsafe boundary where persistence adapters and test support turn
-stored strings into opaque ids. Application API consumes already-branded values.
+## Product mappings
 
-## Actor model
+Administrative issuance maps to ISSUE into the community reserve Account.
 
-`Actor` is a discriminated union encoding the persisted `actor_kind` / `actor_id` columns of the
-actor/visibility specification at compile time: `user` and `service` actors carry an identifier,
-`system` carries none. The actor is attached when the `EconomicOperation` is persisted; it is
-never an input to the economic evaluator.
+Administrative distribution maps to TRANSFER from the reserve to the recipient's product-default
+Account.
 
-Use-case authorization:
+User-facing transfer maps to TRANSFER from the sender's default Account to the recipient's default
+Account.
 
-- `issueToken`, `distributeToken` — require `AdminActor`: the `admin-api` service principal.
-  A call with any other principal — such as `discord-adapter` — is a compile error in typed code
-  and a `forbidden` result at runtime.
-- `transferToken`, `payTreasury` — require `UserActor`; the source wallet is the actor's own by
-  construction. A user actor can never move another user's funds, and `discord-adapter` can never
-  appear as the actor of a user-initiated operation.
-- `getBalance`, `getTransactionHistory` — self-only: a user selector requires the matching
-  `UserActor`, while the treasury selector requires `AdminActor`.
+Balance is a projection of one Account.
 
-## Economic surface
+History is a projection of primitive Transactions touching one Account.
 
-The application/economic core contains exactly these operation semantics:
+Distribution and treasury are application vocabulary, not primitive Transaction or Account kinds.
 
-```text
-TOKEN_ISSUANCE
-DISTRIBUTION
-P2P_TRANSFER
-TREASURY_PAYMENT
-```
+## Identity
 
-Feature-specific eligibility, cadence, campaign state, scheduling, or business uniqueness is not an
-application-core responsibility merely because it may cause one of those operations.
+IdentityBinding maps the exact ExternalIdentity pair of issuer and subject to a Principal.
 
-## History semantics
+Registration creates one Principal and one product-default Account when the external identity is not
+already bound.
 
-Newest-first, opaque cursor pagination, default page size 50. A supplied `limit` must be an integer
-in `1..100`; out-of-contract values are an `invalid-input` failure carrying
-`code: "INVALID_LIMIT"`, never clamped.
+The primitive model permits multiple Accounts per Principal, but Phase 2 does not introduce generic
+Account-management behavior.
 
-`TOKEN_ISSUANCE` never appears in a User's history — its movement touches only the treasury wallet.
-The treasury selector is the administrative view and does show issuances. `direction` is `"in"`
-when value arrives at the subject wallet, `"out"` when it leaves, and `"self"` for a net-zero
-self-movement. `counterparty` is `"treasury"` for the system side or the other wallet's owning
-User id — the User's own id for a self-transfer.
+The current Discord-first product does not constrain Principal to human subjects.
+
+## Authorization
+
+Technical caller identity and domain Principal are distinct concepts.
+
+An adapter credential may assert the ExternalIdentity associated with a product action. The
+application resolves that identity and authorizes the requested use case inside one trusted boundary.
+
+Administrative authority is separate from adapter authority.
+
+Primitive economic validity never grants permission. A structurally valid TRANSFER is not authorized
+merely because the source Account contains sufficient funds.
+
+## Unit of work
+
+Every state-changing application operation executes in one serialized atomic section supplied by the
+UnitOfWork boundary.
+
+Repository capabilities are scoped to that section and must not remain usable afterward.
+
+External I/O completes before entering the synchronous critical section.
+
+An outer orchestration may compose identity, idempotency, application records, and one primitive
+ledger mutation in the same atomic section when correctness requires it.
+
+## Idempotency
+
+Idempotency protects one logical mutation request from duplicate delivery within the authenticated
+technical-caller namespace.
+
+A successful replayable result and its protected mutation commit together.
+
+Expected non-mutating failure leaves no successful replay record.
+
+Idempotency does not encode feature eligibility, campaign uniqueness, or simulation-event
+equivalence.
+
+## Persistence ports
+
+After issue #25, application-facing persistence contracts should expose the smallest capabilities
+required for Principal, Account, IdentityBinding, Transaction, registration, and idempotency
+orchestration.
+
+Do not preserve separate EconomicOperation and LedgerTransaction repositories or Account-kind
+contracts solely for compatibility with the superseded model.
+
+Identifier allocation remains a persistence-boundary responsibility unless a concrete requirement
+moves it elsewhere.
+
+## History
+
+History is derived from primitive Transactions relative to an Account.
+
+A projection may describe direction as incoming, outgoing, or self and may identify a counterparty
+Principal when application visibility permits it.
+
+The projection must not reconstruct semantic Transaction kinds such as distribution, peer-to-peer
+payment, or treasury payment from direction alone.
+
+## Runtime independence
+
+This package must not depend on Durable Object APIs, SQLite implementation types, D1, R2, Queues,
+Discord protocol types, or another runtime-specific persistence mechanism.
+
+Runtime adapters implement application ports; they do not redefine primitive semantics.

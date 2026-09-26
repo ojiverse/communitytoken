@@ -4,9 +4,9 @@ Every state-changing application operation executes inside one serialized atomic
 
 ## Serialization
 
-For one community, there is exactly one serialization authority for durable mutations.
+For one deployed community there is exactly one serialization authority for durable mutations.
 
-Two concurrent mutations must be observationally equivalent to some serial ordering.
+Concurrent mutations must be observationally equivalent to some serial ordering.
 
 A mutation may not observe a partially committed concurrent mutation.
 
@@ -14,48 +14,57 @@ A mutation may not observe a partially committed concurrent mutation.
 
 All durable effects of one accepted application operation commit together or not at all.
 
-When a transaction aborts, no write performed within that transaction is observable afterward.
+For a primitive monetary mutation, the Transaction and every required Account balance change are
+indivisible.
 
-A domain-level rejection is not a partial success. Unless an outer application operation explicitly
-persists a separate non-economic result, the rejected economic operation itself writes no economic
-state.
+When idempotency, registration, identity, or another application record must be consistent with that
+monetary mutation, the owning application operation composes those effects in the same outer atomic
+section.
+
+A rejection is not partial success. No primitive Transaction is committed for a rejected ISSUE or
+TRANSFER.
 
 ## Outermost ownership
 
-The outermost application orchestration owns the transaction.
+The outermost application orchestration owns the serialized section.
 
-Feature state that protects or qualifies an economic mutation, such as eligibility or replay state,
-must be composed in the same transaction as the protected mutation when their correctness depends on
-one another.
+Primitive economic operations may run inside an already-open transaction context so the application
+can compose them with other state without exposing an intermediate committed state.
 
-Nested or re-entrant transactions are not part of the contract.
+Nested or re-entrant transaction ownership is not part of the contract.
 
-## Transaction capability lifetime
+## Feature and simulation state
 
-Repositories available through a transaction context are capabilities scoped to that transaction.
+Feature or simulation state remains outside the primitive economic model.
 
-After the transaction closes:
+If correctness requires a higher-level record and a monetary Transaction to become visible together,
+the application may compose both through one supported atomic boundary.
 
-- the context is permanently unusable;
-- repository handles obtained from it are permanently unusable;
-- a later transaction must not make an earlier handle valid again.
+That composition does not make the feature or simulation record part of Transaction semantics.
 
-Values read from a repository must not provide a mutable alias to durable state. State changes occur
-only through the mutation operations owned by the active transaction.
+## Transaction-scoped capabilities
+
+Repository handles available through an active transaction context are capabilities scoped to that
+context.
+
+After the context closes, those handles remain unusable.
+
+Values returned from persistence must not provide mutable aliases that allow durable state to be
+changed outside supported mutation operations.
 
 ## Synchronous critical section
 
-The atomic section does not suspend and performs no external interaction.
+The serialized critical section performs no external interaction and does not suspend while holding
+the mutation capability.
 
-Any work that can wait on another system or continue asynchronously must complete before the
-serialized section begins.
+Network calls and other asynchronous work complete before the critical section begins.
 
-If execution attempts to escape the synchronous section before producing its final result, the
-transaction is invalid and must not commit.
+If execution attempts to escape the supported synchronous section before producing its final result,
+the mutation must not commit.
 
-## Composition
+## Recovery model
 
-A use-case operation may run inside an already-open transaction context.
+A process or runtime failure before commit leaves no partial durable mutation.
 
-This permits an outer feature operation to compose multiple invariant-preserving operations without
-opening another transaction or introducing an intermediate committed state.
+A failure after commit may require request replay or operational diagnosis, but it must not require
+rewriting committed Transaction history to repair monetary state.

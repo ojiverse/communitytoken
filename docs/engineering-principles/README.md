@@ -1,38 +1,38 @@
 # Engineering Principles
 
-This directory records engineering principles that should remain useful beyond a single change or
-technology choice. They describe how to assign ownership, choose meaningful validation, and keep
-the repository understandable as it evolves.
+This directory records repository-wide engineering principles that should remain useful beyond any
+single feature, runtime, or architecture revision.
 
-These documents are decision guides, not an additional policy engine. A principle should influence
-the design of a change, but it should not automatically produce another script or test.
+They are reasoning rules, not an additional policy engine.
 
 ## Reading order
 
-1. [Requirements and Invariants](./requirements-and-invariants.md) identifies what the design must
-   preserve from its functional and non-functional requirements.
-2. [Single Source of Truth](./single-source-of-truth.md) assigns each fact to one owner and derives
-   the use of that owner's native interpretation and enforcement mechanisms.
-3. [Loose Coupling and High Cohesion](./loose-coupling-and-high-cohesion.md) keeps related knowledge
-   with one owner and limits what separate components must know about each other.
-4. [Types as Design](./types-as-design.md) expresses requirements and invariants statically so
-   contradictory implementations fail to compile.
-5. [Immutability by Default](./immutability-by-default.md) makes state transitions explicit and
-   treats mutable data as a narrowly justified exception.
-6. [Comments Explain Why](./comments-explain-why.md) preserves only the essential rationale that
-   types, structure, and implementation cannot express.
-7. [Deletion and Deliberate Absence](./deletion-and-deliberate-absence.md) removes competing
-   authorities and preserves the reason a parallel mechanism does not exist.
+Requirements and Invariants begins with the properties a design must preserve.
 
-Concrete design policies that apply these principles to recurring classes of changes live separately
-under [Design Policies](../design-policy/README.md). Read the relevant design policy after these
-principles and before writing a feature-specific design or implementation plan.
+Single Source of Truth assigns each fact to one authoritative owner.
 
-Together, these principles favor a short assurance path:
+Loose Coupling and High Cohesion keeps related knowledge together and limits cross-boundary leakage.
 
-```text
-requirement -> invariant -> authoritative source -> owning mechanism -> observable outcome
-```
+Types as Design expresses stable invariants through the type system where practical.
 
-The goal is not to maximize the number of checks. The goal is to make responsibility and evidence
-unambiguous.
+Immutability by Default makes state transitions explicit.
+
+Comments Explain Why reserves comments for irreducible rationale.
+
+Deletion and Deliberate Absence explains why removing obsolete or duplicate mechanisms can improve
+assurance.
+
+Design policies under docs/design-policy apply these principles to recurring design choices.
+
+## Current architectural example
+
+The primitive-ledger reset demonstrates the intended use of these principles.
+
+The monetary requirement is smaller than the old product vocabulary, so Principal, Account,
+Transaction, ISSUE, and TRANSFER are the authoritative primitive concepts.
+
+Treasury, distribution, human-user classification, feature provenance, and simulation policy remain
+outside that boundary because they are owned by higher-level consumers.
+
+The goal is not the largest model that can describe the system. It is the shortest reliable path from
+requirement to invariant to owner to observable behavior.

@@ -1,43 +1,30 @@
 # Registration
 
-Registration proves one expected ExternalIdentity and creates or resolves its stable User binding.
+Registration proves one expected ExternalIdentity and creates or resolves its stable Principal
+binding.
 
-It is a one-shot transaction, not a long-lived login session.
+It is a one-shot identity-establishment transaction, not a long-lived login session.
 
 ## Registration intent
 
-A registration intent fixes:
+A registration intent fixes one expected ExternalIdentity, one unpredictable correlation state, one
+authentication nonce, one proof-key secret, a creation time, an expiry time, and a lifecycle state.
 
-- one expected ExternalIdentity;
-- one unpredictable correlation state;
-- one authentication nonce;
-- one proof-key secret;
-- a creation time;
-- an expiry time;
-- a lifecycle state.
-
-Its lifetime is exactly 600 seconds.
+Its lifetime is exactly six hundred seconds.
 
 At most one status-active intent exists for an ExternalIdentity.
 
-Lifecycle status and temporal validity are distinct: an intent can still have status active after its
+Lifecycle status and temporal validity are distinct. An intent may still have active status after its
 expiry time, but an expired intent is unusable.
 
-Creating a newer intent for the same ExternalIdentity supersedes any older status-active intent,
-including one that is already expired.
+Creating a newer intent for the same ExternalIdentity supersedes any older status-active intent.
 
 ## Proof binding
 
-The ExternalIdentity proven by authentication must equal the ExternalIdentity fixed when the
-registration intent was created.
+The ExternalIdentity proven by authentication must equal the ExternalIdentity fixed when the intent
+was created.
 
-In particular:
-
-verified_issuer = expected_issuer
-
-and:
-
-verified_subject = expected_subject
+Both issuer and subject must match exactly.
 
 Possession of a forwarded registration URL therefore cannot bind a different authenticated subject.
 
@@ -45,30 +32,32 @@ Possession of a forwarded registration URL therefore cannot bind a different aut
 
 An expired, consumed, or superseded intent cannot complete registration.
 
-A failed or mismatched identity proof does not consume the intent. The intended subject may retry
-while the same intent remains active and unexpired.
+A failed or mismatched proof does not consume the intent. The intended subject may retry while the
+same intent remains active and unexpired.
 
-Completion rechecks intent validity and exact identity equality at the same serialized boundary that
-creates or resolves the identity binding.
+Completion rechecks intent validity and exact identity equality inside the same serialized boundary
+that creates or resolves the binding.
 
-## Atomic result
+## First successful result
 
-A first successful registration creates, as one indivisible result:
+When the ExternalIdentity is not already bound, successful registration atomically creates one
+Principal, one zero-balance product-default Account owned by that Principal, one IdentityBinding from
+the proven ExternalIdentity to that Principal, and the consumed registration intent state.
 
-- one stable User;
-- one zero-balance user wallet owned by that User;
-- one IdentityBinding from the proven ExternalIdentity to that User;
-- the consumed registration intent.
+Registration creates no monetary value and no Transaction.
 
-Registration itself creates no economic movement.
+The primitive model permits more than one Account per Principal, but the current product creates one
+default Account during registration and exposes no generic Account-management flow in Phase 2.
+
+## Existing binding
 
 If the ExternalIdentity becomes bound before an otherwise valid intent completes, registration
-resolves to the existing User, creates no additional binding or wallet, and still consumes that
-intent as the successful single-use completion.
+resolves to the existing Principal, creates no duplicate Principal, Account, or binding, and consumes
+the intent as a successful single-use completion.
 
 ## Session independence
 
 Successful registration does not require creating a persistent user session.
 
-The durable result is the User and IdentityBinding, not the authentication transaction used to prove
-them.
+The durable identity result is Principal plus IdentityBinding. The authentication transaction used
+to prove the ExternalIdentity is not the long-term identity anchor.

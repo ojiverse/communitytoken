@@ -1,21 +1,22 @@
 # Economic Model
 
-The economic specification has been split by stable concept boundary so it can be read progressively.
+This file is the compatibility entry point for the current economic specification.
 
-This file is a compatibility entry point and contains no independent normative rules.
+The primitive model contains Principal, Account, and Transaction.
 
-Start with:
+The only monetary Transaction kinds are ISSUE and TRANSFER.
 
-- [Economic State](./specification/domain/economic-state.md)
-- [Economic Transitions](./specification/domain/economic-transitions.md)
+The ledger intentionally does not encode treasury, distribution, peer-to-peer payment, reward,
+campaign, actor, or simulation-policy meaning as primitive monetary types.
 
-Related domain specifications:
+Read progressively:
 
-- [Actor and Visibility](./specification/domain/actor-and-visibility.md)
-- [Identity](./specification/domain/identity.md)
+- Economic State defines Principal, Account, Transaction, monetary domains, and supply.
+- Economic Transitions defines ISSUE, TRANSFER, acceptance, rejection, and self-transfer.
+- Identity defines ExternalIdentity and IdentityBinding to Principal.
+- Application Authority and Visibility defines authorization and product-visibility rules around the
+  primitive ledger.
 
-System-boundary guarantees are under
-[Technical Specifications](./specification/technical/README.md).
+System-boundary guarantees live under the technical specifications.
 
-The complete specification index and authority rules are in
-[CommunityToken Specifications](./specification/README.md).
+The specification index and authority rules are in docs/specification/README.md.

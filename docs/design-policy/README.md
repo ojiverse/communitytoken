@@ -1,12 +1,15 @@
 # Design Policies
 
-This directory contains concrete design policies for recurring design decisions.
+This directory contains policies for recurring design decisions.
 
-Engineering principles define repository-wide reasoning rules such as ownership, invariants, single
-sources of truth, typing, immutability, and deliberate absence. Design policies apply those principles
-to a specific class of changes and provide a checklist that should be consulted before implementation.
+Engineering principles explain general reasoning rules. Design policies apply those rules to a class
+of design work and help decide what must be fixed now versus deliberately left open.
 
-Read [Design at the Current Level of Certainty](./design-at-current-certainty.md) as the shared mental
-model for deciding what a design should fix now and what it should deliberately leave open. Then read
-the relevant policy after [Engineering Principles](../engineering-principles/README.md) and before
-writing a feature-specific design or implementation plan.
+Read Design at the Current Level of Certainty before introducing a new domain concept, persistent
+entity, shared abstraction, classification, or framework.
+
+For CommunityToken economic work, this policy is especially important: useful product or simulation
+concepts do not become primitive ledger concepts merely because they can be imagined or are currently
+used by one scenario.
+
+Architecture issue #17 and docs/specification define the current concrete boundary.

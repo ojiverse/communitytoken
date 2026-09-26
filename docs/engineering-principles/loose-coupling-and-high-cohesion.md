@@ -1,45 +1,48 @@
 # Loose Coupling and High Cohesion
 
-A design should place closely related responsibilities together and minimize the knowledge that
-separate components require about one another. These two goals reinforce each other: a cohesive
-owner can expose a small contract, and a small contract allows its consumers to remain loosely
-coupled.
+A cohesive component owns one coherent capability and the invariants required to provide it.
+
+Loosely coupled components depend only on the smallest stable contract required for collaboration.
+
+These properties reinforce one another: clear ownership enables a small interface, and a small
+interface prevents unrelated knowledge from leaking across boundaries.
 
 ## High cohesion
 
-A cohesive component owns one coherent capability, including the invariants and state transitions
-required to provide it. Its contents change for the same underlying reasons and can be understood
-as one design unit.
+Place decisions together when they change for the same underlying reason.
 
-Cohesion is not measured by file size. Splitting one capability across many thin wrappers can make
-ownership less clear, while a larger component may still be cohesive when every part protects the
-same invariants.
+The primitive economic kernel owns monetary arithmetic and invariants because ISSUE and TRANSFER are
+evaluated from the same monetary facts.
+
+Identity proof, product authorization, treasury designation, feature policy, and simulation behavior
+change for different reasons and therefore remain outside that kernel.
+
+Cohesion is not measured by file size or number of wrappers.
 
 ## Loose coupling
 
-Components should depend on the smallest stable contract required for collaboration. A consumer
-should not know another component's storage layout, internal workflow, incidental types, or sequence
-of private operations.
+A consumer should not need another component's storage layout, private workflow, runtime-specific
+types, or internal sequence of operations.
 
-Loose coupling does not mean eliminating meaningful dependencies. Dependencies required by the
-domain should be explicit, directional, and represented in types. The goal is to prevent changes in
-one owner from forcing unrelated changes elsewhere.
+The Discord adapter depends on the supported CommunityToken application contract rather than
+Principal or Account persistence.
 
-## Design rule
+Future feature and simulation consumers should follow the same rule.
 
-Assign each capability and its invariants to one owner. Keep the decisions needed to preserve those
-invariants inside that boundary. Expose only the behavior and data that consumers genuinely need,
-using a contract that does not reveal replaceable implementation choices.
+## Design questions
 
-Before creating or changing a boundary, ask:
+Before changing a boundary, identify which invariant is owned there, what information that owner
+requires, what consumers actually need, and whether the proposed contract exposes a replaceable
+implementation detail.
 
-- Which capability and invariants belong together?
-- Do these elements change for the same reason?
-- Which component has the knowledge required to make this decision?
-- What is the minimum contract a consumer needs?
-- Does the contract expose an implementation detail or mutable state?
-- Can either side change internally without requiring an unrelated change on the other side?
-- Is an abstraction representing a real boundary, or merely adding indirection?
+Do not create an abstraction only to add indirection.
 
-High cohesion localizes knowledge and change. Loose coupling keeps that knowledge from leaking into
-the rest of the system.
+A useful abstraction represents a real shared invariant or trust boundary.
+
+## Outcome
+
+High cohesion localizes change.
+
+Loose coupling allows the owner to evolve internally without forcing unrelated consumers to change.
+
+Together they keep architecture aligned with responsibility rather than repository structure.
